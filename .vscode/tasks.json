@@ -1,0 +1,62 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        // {
+        //     "label": "Start J-Link GDB Server (detached)",
+        //     "type": "shell",
+        //     "command": "powershell",
+        //     "args": [
+        //         "-NoProfile",
+        //         "-ExecutionPolicy",
+        //         "Bypass",
+        //         "-Command",
+        //         "Start-Process -FilePath \"C:\\Program Files (x86)\\SEGGER\\JLink\\JLinkGDBServerCL.exe\" -ArgumentList \"-if\",\"JTAG\",\"-device\",\"RISC-V\",\"-speed\",\"400\",\"-port\",\"2331\",\"-singlerun\",\"-nogui\""
+        //     ],
+        //     "problemMatcher": []
+        // },
+        {
+            "label": "J-Link: GDB Server (RISC-V)",
+            "type": "process",
+            "command": "C:\\Program Files (x86)\\SEGGER\\JLink\\JLinkGDBServerCL.exe",
+            "args": [
+                "-if",
+                "JTAG",
+                "-device",
+                "RISC-V",
+                "-speed",
+                "4000",
+                "-port",
+                "2331",
+                "-singlerun",
+                "-nogui"
+            ],
+            "isBackground": true,
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": false
+            }
+        },
+        {
+            "label": "Wait 1s",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-Command",
+                "Start-Sleep -Seconds 1"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Start J-Link + Wait",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Start J-Link GDB Server (detached)",
+                "Wait 1s"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}

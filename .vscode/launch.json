@@ -1,0 +1,61 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        // {
+        //     "name": "Zephyr RISC-V (J-Link)",
+        //     "type": "cortex-debug",
+        //     "request": "launch",
+        //     "servertype": "external",
+        //     "gdbTarget": "localhost:2331",
+        //     "executable": "${workspaceFolder}/walle_g_build/zephyr/zephyr.elf",
+        //     "gdbPath": "D:/appdata/users/qwe17/zephyr-sdk-0.17.4/riscv32-zephyr-elf/bin/riscv32-zephyr-elf-gdb.exe",
+        //     "runToEntryPoint": "z_cstart",
+        //     "overrideLaunchCommands": [
+        //         "monitor halt",
+        //         "load",
+        //         "continue"
+        //     ]
+        // },
+        // {
+        //     "name": "Zephyr RISC-V (J-Link external, stay halted)",
+        //     "type": "cortex-debug",
+        //     "request": "launch",
+        //     "servertype": "external",
+        //     "gdbTarget": "localhost:2331",
+        //     "executable": "${workspaceFolder}/walle_g_build/zephyr/zephyr.elf",
+        //     "gdbPath": "D:/appdata/users/qwe17/zephyr-sdk-0.17.4/riscv32-zephyr-elf/bin/riscv32-zephyr-elf-gdb.exe",
+        //     "showDevDebugOutput": "raw",
+        //     "overrideLaunchCommands": [
+        //         "monitor halt",
+        //         "load",
+        //         "monitor halt"
+        //     ]
+        // }
+
+    {
+      "name": "Zephyr RV32 ELF (J-Link external)",
+      "type": "cortex-debug",
+      "request": "launch",
+
+      "servertype": "external",
+      "gdbTarget": "localhost:2331",
+
+      "executable": "${workspaceFolder}/walle_g_build/zephyr/zephyr.elf",
+      "gdbPath": "D:/appdata/users/qwe17/zephyr-sdk-0.17.4/riscv64-zephyr-elf/bin/riscv64-zephyr-elf-gdb.exe",
+
+      "showDevDebugOutput": "raw",
+
+      // 关键：不要同时用 runToEntryPoint + 自己 continue
+      "runToEntryPoint": "z_cstart",
+
+      // 关键：load 后保持 halt，让扩展自己跑到 entry
+      "overrideLaunchCommands": [
+        "monitor halt",
+        "load",
+        "monitor halt"
+      ]
+    }
+
+
+    ]
+}

@@ -6,6 +6,8 @@ platforms = ["win-64"]
 version = "0.1.0"
 
 [tasks]
+walle_g_helloworld_c = "west build -b walle_g_fpga -d walle_g_build -p always zephyr/samples/hello_world"
+walle_g_helloworld = "west build -b walle_g_fpga -d walle_g_build zephyr/samples/hello_world"
 
 [dependencies]
 python = "==3.12"
@@ -68,3 +70,5 @@ esptool = ">=5.0.2"
 imgtool = ">=2.2.0"
 grpcio-tools = "==1.68.0"
 setuptools = ">=66.1.0"
+
+
