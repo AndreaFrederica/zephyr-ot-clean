@@ -1,0 +1,7 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Zephyr build output
+build/
+walle_g_build/*
