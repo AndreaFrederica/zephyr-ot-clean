@@ -5,3 +5,4 @@
 # Zephyr build output
 build/
 walle_g_build/*
+build_*/

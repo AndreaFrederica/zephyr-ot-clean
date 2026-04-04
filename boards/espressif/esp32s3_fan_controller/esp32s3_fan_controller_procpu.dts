@@ -1,0 +1,210 @@
+/*
+ * Copyright (c) 2024-2025 Espressif Systems (Shanghai) Co., Ltd.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+/dts-v1/;
+
+#include <espressif/esp32s3/esp32s3_wroom_n16r8.dtsi>
+#include "esp32s3_fan_controller-partitions.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include "esp32s3_fan_controller-pinctrl.dtsi"
+
+/ {
+	model = "ESP32-S3 Fan Controller";
+	compatible = "espressif,esp32s3";
+
+	aliases {
+		uart-0 = &uart0;
+		sw0 = &button0;
+		watchdog0 = &wdt0;
+		led0 = &status_led;
+		status-led = &status_led;
+		fan-pwm0 = &fan_pwm0;
+		fan-pwm1 = &fan_pwm1;
+		fan-power0 = &fan_power0;
+		fan-power1 = &fan_power1;
+		fan-adc0 = &fan_adc0;
+		fan-adc1 = &fan_adc1;
+		fan-tach0 = &fan_tach0;
+		fan-tach1 = &fan_tach1;
+	};
+
+	chosen {
+		zephyr,sram = &sram1;
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+	};
+
+	buttons {
+		compatible = "gpio-keys";
+
+		button0: button_0 {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "BOOT Button";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		status_led: led_0 {
+			gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+			label = "Status LED";
+		};
+	};
+
+	fanpwms {
+		compatible = "pwm-leds";
+
+		fan_pwm0: fan_pwm_0 {
+			label = "Fan 1 PWM";
+			pwms = <&ledc0 0 PWM_HZ(25000) PWM_POLARITY_NORMAL>;
+		};
+
+		fan_pwm1: fan_pwm_1 {
+			label = "Fan 2 PWM";
+			pwms = <&ledc0 1 PWM_HZ(25000) PWM_POLARITY_NORMAL>;
+		};
+	};
+
+	fanpowers {
+		compatible = "gpio-leds";
+
+		fan_power0: fan_power_0 {
+			gpios = <&gpio0 10 GPIO_ACTIVE_HIGH>;
+			label = "Fan 1 Power";
+		};
+
+		fan_power1: fan_power_1 {
+			gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+			label = "Fan 2 Power";
+		};
+	};
+
+	fantachs {
+		compatible = "gpio-keys";
+
+		fan_tach0: fan_tach_0 {
+			gpios = <&gpio0 6 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Fan 1 Tach";
+		};
+
+		fan_tach1: fan_tach_1 {
+			gpios = <&gpio0 7 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "Fan 2 Tach";
+		};
+	};
+
+	/* The external divider is 35k / 10k, so 12 V becomes about 2.67 V at the ADC pin. */
+	fan_adc0: fan_adc_0 {
+		compatible = "voltage-divider";
+		io-channels = <&adc0 3>;
+		output-ohms = <10000>;
+		full-ohms = <45000>;
+	};
+
+	fan_adc1: fan_adc_1 {
+		compatible = "voltage-divider";
+		io-channels = <&adc0 4>;
+		output-ohms = <10000>;
+		full-ohms = <45000>;
+	};
+
+	wifi_ap: wifi_ap {
+		compatible = "espressif,esp32-wifi";
+		status = "okay";
+	};
+};
+
+&usb_serial {
+	status = "disabled";
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&adc0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1_4";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@4 {
+		reg = <4>;
+		zephyr,gain = "ADC_GAIN_1_4";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&ledc0 {
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
+	};
+
+	channel1@1 {
+		reg = <0x1>;
+		timer = <1>;
+	};
+};
+
+&timer0 {
+	status = "disabled";
+};
+
+&timer1 {
+	status = "disabled";
+};
+
+&timer2 {
+	status = "disabled";
+};
+
+&timer3 {
+	status = "disabled";
+};
+
+&wdt0 {
+	status = "okay";
+};
+
+&trng0 {
+	status = "okay";
+};
+
+&wifi {
+	status = "okay";
+};

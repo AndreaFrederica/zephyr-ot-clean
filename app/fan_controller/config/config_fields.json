@@ -1,0 +1,66 @@
+{
+  "version": {
+    "type": "integer",
+    "default": 1,
+    "readonly": true,
+    "description": "Configuration schema version."
+  },
+  "wifi.sta_ssid": {
+    "type": "string",
+    "default": "",
+    "max_length": 32,
+    "description": "Saved STA SSID."
+  },
+  "wifi.sta_psk": {
+    "type": "string",
+    "default": "",
+    "max_length": 64,
+    "description": "Saved STA password."
+  },
+  "fans.fan1.enabled": {
+    "type": "boolean",
+    "default": true,
+    "description": "Fan 1 boot-time power state."
+  },
+  "fans.fan1.percent": {
+    "type": "integer",
+    "default": 40,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Fan 1 boot-time manual target percent."
+  },
+  "fans.fan1.use_adc_target": {
+    "type": "boolean",
+    "default": false,
+    "description": "Use calibrated ADC feedback voltage to derive fan 1 target percent."
+  },
+  "fans.fan2.enabled": {
+    "type": "boolean",
+    "default": true,
+    "description": "Fan 2 boot-time power state."
+  },
+  "fans.fan2.percent": {
+    "type": "integer",
+    "default": 40,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Fan 2 boot-time manual target percent."
+  },
+  "fans.fan2.use_adc_target": {
+    "type": "boolean",
+    "default": false,
+    "description": "Use calibrated ADC feedback voltage to derive fan 2 target percent."
+  },
+  "host.alive_check_enabled": {
+    "type": "boolean",
+    "default": false,
+    "description": "When host-controlled mode is active, require periodic keepalive from the upper computer."
+  },
+  "host.alive_timeout_ms": {
+    "type": "integer",
+    "default": 5000,
+    "minimum": 500,
+    "maximum": 600000,
+    "description": "Upper computer keepalive timeout in milliseconds."
+  }
+}

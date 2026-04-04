@@ -1,5 +1,9 @@
 {
     "AndreaNovelHelper.workspaceDisabled": true,
     "terminal.integrated.defaultProfile.windows": "Zephyr IDE Terminal",
-    "cmake.configureOnOpen": false
+    "cmake.configureOnOpen": false,
+    "cSpell.words": [
+        "fanctl",
+        "printk"
+    ]
 }

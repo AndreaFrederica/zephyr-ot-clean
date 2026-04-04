@@ -1,0 +1,6 @@
+board:
+  name: esp32s3_fan_controller
+  full_name: ESP32-S3 Fan Controller
+  vendor: espressif
+  socs:
+  - name: esp32s3

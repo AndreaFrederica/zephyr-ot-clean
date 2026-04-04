@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "listen_port": 22,
+  "host_key_path": "/etc/ssh/ssh_host_ecdsa_key.der",
+  "username": "root",
+  "password": "123456",
+  "allow_password_auth": true,
+  "allow_public_key_auth": true,
+  "authorized_keys_path": "/root/.ssh/authorized_keys"
+}

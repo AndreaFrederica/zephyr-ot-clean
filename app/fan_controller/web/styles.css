@@ -1,0 +1,270 @@
+:root {
+  --bg: #f3f5f7;
+  --panel: #ffffff;
+  --panel-border: #d7dee6;
+  --text: #15202b;
+  --muted: #5b6b7c;
+  --accent: #1f7a5a;
+  --accent-soft: #dff2ea;
+  --accent-warm: #9a5b14;
+  --danger: #c63f3f;
+  --code-bg: #f7f8fa;
+  --shadow: 0 14px 30px rgba(20, 32, 43, 0.08);
+  font-family: "Segoe UI", "PingFang SC", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--bg);
+}
+
+code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.wrap {
+  width: min(1200px, calc(100vw - 28px));
+  margin: 0 auto;
+  padding: 24px 0 36px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.5fr 0.9fr;
+  gap: 16px;
+  align-items: stretch;
+  margin-bottom: 18px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(28px, 5vw, 42px);
+  line-height: 1.08;
+}
+
+.hero-copy {
+  max-width: 66ch;
+  color: var(--muted);
+  line-height: 1.65;
+  margin: 14px 0 0;
+}
+
+.hero-card,
+.card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+
+.hero-card {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  justify-content: center;
+}
+
+.hero-label,
+.hero-meta {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.hero-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  padding: 18px;
+}
+
+.card-wide {
+  grid-column: 1 / -1;
+}
+
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.card-head h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.card-note,
+.inline-meta {
+  margin: 0 0 12px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid #c9d6e2;
+  background: #f6f9fb;
+  color: #35516c;
+  font-size: 12px;
+}
+
+.badge.neutral {
+  color: var(--muted);
+}
+
+.field {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.field span {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="number"],
+textarea {
+  width: 100%;
+  border: 1px solid #c8d2dc;
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--text);
+  padding: 11px 13px;
+  outline: none;
+}
+
+textarea {
+  min-height: 220px;
+  resize: vertical;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  line-height: 1.5;
+  background: var(--code-bg);
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+textarea:focus {
+  border-color: #7ca7c0;
+}
+
+.switch-row,
+.telemetry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+button {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 10px 15px;
+  font-weight: 700;
+  cursor: pointer;
+  color: #ffffff;
+  background: var(--accent);
+}
+
+button.secondary,
+.file-entry {
+  color: var(--text);
+  background: #f4f7f9;
+  border-color: #d2dbe3;
+}
+
+button.danger {
+  background: var(--danger);
+}
+
+pre {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 14px;
+  background: var(--code-bg);
+  border: 1px solid #dde4ea;
+  color: #34495d;
+  line-height: 1.6;
+}
+
+.editor {
+  min-height: 300px;
+}
+
+.file-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 18px;
+}
+
+.file-entry {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.file-entry.dir {
+  border-color: #a9c3d8;
+}
+
+.file-entry.file {
+  border-color: #b8d6c7;
+}
+
+.accent {
+  color: var(--accent-warm);
+}
+
+@media (max-width: 840px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .wrap {
+    width: min(100vw - 18px, 1200px);
+    padding-top: 16px;
+  }
+}

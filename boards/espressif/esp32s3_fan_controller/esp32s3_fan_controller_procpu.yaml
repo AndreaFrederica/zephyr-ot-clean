@@ -1,0 +1,24 @@
+identifier: esp32s3_fan_controller/esp32s3/procpu
+name: ESP32-S3 Fan Controller PROCPU
+type: mcu
+arch: xtensa
+toolchain:
+  - zephyr
+supported:
+  - uart
+  - gpio
+  - pwm
+  - adc
+  - netif:wifi
+testing:
+  ignore_tags:
+    - bluetooth
+    - flash
+    - cpp
+    - posix
+    - watchdog
+    - crypto
+    - eeprom
+    - cmsis_rtos
+    - jwt
+vendor: espressif

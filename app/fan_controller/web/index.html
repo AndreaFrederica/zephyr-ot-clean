@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ESP32-S3 Fan Controller</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">ESP32-S3 Fan Controller</p>
+        <h1>双路风扇控制器</h1>
+        <p class="hero-copy">页面用于查看实时风扇遥测、设置目标转速、配置 Wi‑Fi，并直接编辑设备上的 JSON 与 LittleFS 文件。</p>
+      </div>
+      <div class="hero-card">
+        <div class="hero-label">设备入口</div>
+        <div class="hero-value" id="deviceAddress">http://192.168.4.1/</div>
+        <div class="hero-meta">状态自动刷新：<strong id="refreshState">运行中</strong></div>
+        <div class="hero-meta">上次更新：<span id="lastRefresh">--</span></div>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <div class="card-head">
+          <h2>AP 配网</h2>
+          <span id="apState" class="badge">--</span>
+        </div>
+        <pre id="apInfo">loading...</pre>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>STA 联网</h2>
+          <span id="staState" class="badge">--</span>
+        </div>
+        <pre id="staInfo">loading...</pre>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Wi‑Fi 凭据</h2>
+          <span class="badge neutral">/api/wifi</span>
+        </div>
+        <label class="field">
+          <span>SSID</span>
+          <input id="ssid" type="text" placeholder="输入路由器 SSID">
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input id="psk" type="password" placeholder="开放网络可留空">
+        </label>
+        <div class="actions">
+          <button id="saveWifiBtn" type="button">保存并连接</button>
+          <button id="refreshBtn" class="secondary" type="button">刷新状态</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>串口命令</h2>
+          <span class="badge neutral">UART Shell</span>
+        </div>
+        <pre>fanctl status
+fanctl set 1 60 on
+fanctl set 2 35 off
+fanctl wifi MySSID MyPass
+fanctl ap on
+fanctl ap off
+fanctl clearwifi</pre>
+      </section>
+
+      <section class="card card-fan">
+        <div class="card-head">
+          <h2>风扇 1</h2>
+          <span id="fan1Badge" class="badge">--</span>
+        </div>
+        <p class="card-note">“应用风扇”只修改当前运行。“保存为开机默认”才会写入下次启动默认值。</p>
+        <label class="switch-row">
+          <input id="fan1Enable" type="checkbox">
+          <span>当前运行启用</span>
+          <strong id="fan1Percent" class="accent">手动 0%</strong>
+        </label>
+        <label class="switch-row">
+          <input id="fan1UseAdcTarget" type="checkbox">
+          <span>ADC 参与目标计算</span>
+          <strong id="fan1EffectivePercent" class="accent">0%</strong>
+        </label>
+        <label class="field">
+          <span>手动目标转速</span>
+          <input id="fan1TargetRpm" type="number" min="0" max="12000" step="50" value="0">
+        </label>
+        <div class="telemetry-row">
+          <span>ADC Raw</span>
+          <strong id="fan1AdcRaw">0</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>ADC</span>
+          <strong id="fan1Adc">0 mV</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>校正电压</span>
+          <strong id="fan1MappedVoltage">0 mV</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>目标百分比</span>
+          <strong id="fan1AdcTargetPercent">0%</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>PWM 输出</span>
+          <strong id="fan1PwmPercent">0%</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>目标转速</span>
+          <strong id="fan1TargetRpmValue">0 rpm</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>实际转速</span>
+          <strong id="fan1Rpm">0 rpm</strong>
+        </div>
+        <div class="actions">
+          <button id="saveFan1Btn" type="button">应用风扇 1</button>
+          <button id="saveFan1DefaultsBtn" class="secondary" type="button">保存为开机默认</button>
+        </div>
+      </section>
+
+      <section class="card card-fan">
+        <div class="card-head">
+          <h2>风扇 2</h2>
+          <span id="fan2Badge" class="badge">--</span>
+        </div>
+        <p class="card-note">“应用风扇”只修改当前运行。“保存为开机默认”才会写入下次启动默认值。</p>
+        <label class="switch-row">
+          <input id="fan2Enable" type="checkbox">
+          <span>当前运行启用</span>
+          <strong id="fan2Percent" class="accent">手动 0%</strong>
+        </label>
+        <label class="switch-row">
+          <input id="fan2UseAdcTarget" type="checkbox">
+          <span>ADC 参与目标计算</span>
+          <strong id="fan2EffectivePercent" class="accent">0%</strong>
+        </label>
+        <label class="field">
+          <span>手动目标转速</span>
+          <input id="fan2TargetRpm" type="number" min="0" max="12000" step="50" value="0">
+        </label>
+        <div class="telemetry-row">
+          <span>ADC Raw</span>
+          <strong id="fan2AdcRaw">0</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>ADC</span>
+          <strong id="fan2Adc">0 mV</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>校正电压</span>
+          <strong id="fan2MappedVoltage">0 mV</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>目标百分比</span>
+          <strong id="fan2AdcTargetPercent">0%</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>PWM 输出</span>
+          <strong id="fan2PwmPercent">0%</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>目标转速</span>
+          <strong id="fan2TargetRpmValue">0 rpm</strong>
+        </div>
+        <div class="telemetry-row">
+          <span>实际转速</span>
+          <strong id="fan2Rpm">0 rpm</strong>
+        </div>
+        <div class="actions">
+          <button id="saveFan2Btn" type="button">应用风扇 2</button>
+          <button id="saveFan2DefaultsBtn" class="secondary" type="button">保存为开机默认</button>
+        </div>
+      </section>
+
+      <section class="card card-wide">
+        <div class="card-head">
+          <h2>JSON 配置</h2>
+          <span class="badge neutral">/etc/fanctl/config.json</span>
+        </div>
+        <div class="inline-meta">
+          <span>字段定义文件：<code>/etc/fanctl/config.fields.json</code></span>
+        </div>
+        <textarea id="configEditor" class="editor" spellcheck="false"></textarea>
+        <div class="actions">
+          <button id="loadConfigBtn" class="secondary" type="button">加载配置</button>
+          <button id="saveConfigBtn" type="button">保存配置</button>
+          <button id="loadFieldsBtn" class="secondary" type="button">查看字段定义</button>
+        </div>
+        <pre id="fieldDefinitions">loading...</pre>
+      </section>
+
+      <section class="card card-wide">
+        <div class="card-head">
+          <h2>LittleFS 文件系统</h2>
+          <span class="badge neutral">/api/fs/*</span>
+        </div>
+        <label class="field">
+          <span>当前目录</span>
+          <input id="fsPath" type="text" value="/">
+        </label>
+        <div class="actions">
+          <button id="browseFsBtn" class="secondary" type="button">浏览目录</button>
+          <button id="mkdirFsBtn" class="secondary" type="button">创建目录</button>
+        </div>
+        <div id="fsEntries" class="file-list"></div>
+        <label class="field">
+          <span>当前文件</span>
+          <input id="filePath" type="text" placeholder="/etc/fanctl/config.json">
+        </label>
+        <textarea id="fileEditor" class="editor" spellcheck="false"></textarea>
+        <div class="actions">
+          <button id="loadFileBtn" class="secondary" type="button">读取文件</button>
+          <button id="saveFileBtn" type="button">保存文件</button>
+          <button id="deleteFileBtn" class="secondary danger" type="button">删除文件</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
