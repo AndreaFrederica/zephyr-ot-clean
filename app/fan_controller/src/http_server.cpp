@@ -18,6 +18,7 @@
 #include "curve_profiles.hpp"
 #include "settings_store.hpp"
 #include "storage.hpp"
+#include "wifi_manager.hpp"
 
 LOG_MODULE_REGISTER(http_server, LOG_LEVEL_INF);
 
@@ -250,9 +251,16 @@ int ApplyConfig(const settings::AppConfig &config, WifiManager &wifi_manager,
 		HostControlManager &host_control)
 {
 	host_control.Configure(config);
-	return (config.wifi_ssid[0] == '\0') ? wifi_manager.ClearCredentials()
-					     : wifi_manager.SaveAndConnect(config.wifi_ssid,
-									   config.wifi_psk);
+
+	// Load WiFi config separately
+	settings::WifiConfig wifi_config = {};
+	if (settings::LoadWifiConfig(&wifi_config) != 0) {
+		settings::FillWifiDefaults(&wifi_config);
+	}
+
+	return (wifi_config.sta_ssid[0] == '\0')
+		       ? wifi_manager.ClearCredentials()
+		       : wifi_manager.SaveAndConnect(wifi_config.sta_ssid, wifi_config.sta_psk);
 }
 
 int ReloadAndApplyConfig(WifiManager &wifi_manager, HostControlManager &host_control)
@@ -753,6 +761,52 @@ void HttpServer::HandleClient(int client)
 
 		(void)SendResponseSized(client, "200 OK", "application/json; charset=utf-8",
 					g_large_buffer, out_len);
+		return;
+	}
+
+	if (strcmp(method, "POST") == 0 && strcmp(path, "/api/wifi/scan") == 0) {
+		int rc = wifi_manager_.StartScan();
+		if (rc != 0) {
+			(void)SendJsonResult(client, false, "scan failed");
+			return;
+		}
+
+		// Wait for scan to complete (max 10 seconds)
+		int timeout = 100;
+		while (!wifi_manager_.IsScanComplete() && timeout-- > 0) {
+			k_sleep(K_MSEC(100));
+		}
+
+		WifiScanResult results[16];
+		size_t count = 0;
+		wifi_manager_.GetScanResults(results, ARRAY_SIZE(results), &count);
+
+		// Build JSON response
+		char json[2048];
+		int pos = snprintf(json, sizeof(json), "{\"ok\":true,\"networks\":[");
+		
+		for (size_t i = 0; i < count && pos < static_cast<int>(sizeof(json)) - 256; ++i) {
+			const char *security = "unknown";
+			switch (results[i].security) {
+			case WIFI_SECURITY_TYPE_NONE: security = "open"; break;
+			case WIFI_SECURITY_TYPE_PSK: security = "wpa2"; break;
+			case WIFI_SECURITY_TYPE_PSK_SHA256: security = "wpa2"; break;
+			case WIFI_SECURITY_TYPE_SAE: security = "wpa3"; break;
+			default: break;
+			}
+			
+			int written = snprintf(json + pos, sizeof(json) - pos,
+				"%s{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%u,\"security\":\"%s\"}",
+				(i > 0) ? "," : "",
+				results[i].ssid,
+				results[i].rssi,
+				results[i].channel,
+				security);
+			pos += written;
+		}
+		
+		snprintf(json + pos, sizeof(json) - pos, "]}");
+		(void)SendResponse(client, "200 OK", "application/json", json);
 		return;
 	}
 

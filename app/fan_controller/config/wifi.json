@@ -1,0 +1,14 @@
+{
+  "sta_ssid": "",
+  "sta_psk": "",
+  "ap_enabled": true,
+  "ap_ssid_prefix": "fanctl",
+  "ap_ssid_use_mac_suffix": true,
+  "ap_ssid_custom": "",
+  "ap_channel": 0,
+  "ap_hidden": false,
+  "ap_max_clients": 4,
+  "dhcp_hostname": "fanctl",
+  "sta_auto_reconnect": true,
+  "sta_scan_threshold": -80
+}

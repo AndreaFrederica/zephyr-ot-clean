@@ -32,21 +32,33 @@ WifiManager *g_instance = nullptr;
 
 WifiManager::WifiManager()
 	: ap_iface_(nullptr), sta_iface_(nullptr), ap_enabled_(false), sta_connected_(false),
-	  ap_clients_(0)
+	  ap_clients_(0), scan_count_(0), scan_complete_(false)
 {
 	ap_ssid_[0] = '\0';
 	saved_ssid_[0] = '\0';
+	memset(scan_results_, 0, sizeof(scan_results_));
+	k_sem_init(&scan_sem_, 0, 1);
 }
 
-void WifiManager::BuildApSsid()
+void WifiManager::BuildApSsid(const settings::WifiConfig *wifi_config)
 {
 	const struct net_linkaddr *link = net_if_get_link_addr(ap_iface_);
+	const char *prefix = wifi_config ? wifi_config->ap_ssid_prefix : "fanctl";
+	bool use_mac_suffix = wifi_config ? wifi_config->ap_ssid_use_mac_suffix : true;
+	const char *custom_ssid = wifi_config ? wifi_config->ap_ssid_custom : nullptr;
 
-	if (link != nullptr && link->len >= 6U) {
-		(void)snprintf(ap_ssid_, sizeof(ap_ssid_), "fanctl-%02x%02x%02x", link->addr[3],
-			       link->addr[4], link->addr[5]);
+	// 如果设置了自定义 SSID，直接使用
+	if (custom_ssid != nullptr && custom_ssid[0] != '\0') {
+		(void)snprintf(ap_ssid_, sizeof(ap_ssid_), "%s", custom_ssid);
+		return;
+	}
+
+	// 使用 MAC 后缀
+	if (use_mac_suffix && link != nullptr && link->len >= 6U) {
+		(void)snprintf(ap_ssid_, sizeof(ap_ssid_), "%s-%02x%02x%02x", prefix,
+			       link->addr[3], link->addr[4], link->addr[5]);
 	} else {
-		(void)snprintf(ap_ssid_, sizeof(ap_ssid_), "fanctl-setup");
+		(void)snprintf(ap_ssid_, sizeof(ap_ssid_), "%s-setup", prefix);
 	}
 }
 
@@ -113,6 +125,37 @@ void WifiManager::EventHandler(struct net_mgmt_event_callback *cb, uint64_t mgmt
 	}
 }
 
+static const char *kNtpServers[] = {
+	"223.5.5.5",      // 阿里云
+	"114.114.114.114", // 114DNS
+	"120.25.115.20",  // 腾讯云
+	"pool.ntp.org",   // NTP Pool
+};
+
+bool WifiManager::TrySyncNtp(const char *server, int port, struct sntp_time *out_time)
+{
+	struct sntp_ctx ctx;
+	struct sockaddr_in addr = {};
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+
+	if (net_addr_pton(AF_INET, server, &addr.sin_addr) != 0) {
+		LOG_DBG("Invalid NTP server: %s", server);
+		return false;
+	}
+
+	int rc = sntp_init(&ctx, (struct sockaddr *)&addr, sizeof(addr));
+	if (rc < 0) {
+		LOG_DBG("SNTP init failed for %s: %d", server, rc);
+		return false;
+	}
+
+	rc = sntp_query(&ctx, 10000, out_time);  // 10秒超时
+	sntp_close(&ctx);
+
+	return rc >= 0;
+}
+
 void WifiManager::SyncTimeViaNtp()
 {
 	settings::NtpConfig ntp_config = {};
@@ -122,39 +165,65 @@ void WifiManager::SyncTimeViaNtp()
 	}
 
 	if (!ntp_config.enabled) {
-		LOG_DBG("NTP sync disabled");
+		LOG_INF("NTP sync disabled");
 		return;
 	}
 
-	struct sntp_ctx ctx;
-	struct sockaddr_in addr = {};
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(ntp_config.port);
-
-	if (net_addr_pton(AF_INET, ntp_config.server, &addr.sin_addr) != 0) {
-		LOG_WRN("Invalid NTP server address: %s", ntp_config.server);
+	// 先检查网络是否真正就绪（ping 网关）
+	if (!sta_connected_) {
+		LOG_WRN("Skip NTP: WiFi not connected");
 		return;
 	}
 
-	int rc = sntp_init(&ctx, (struct sockaddr *)&addr, sizeof(addr));
-	if (rc < 0) {
-		LOG_WRN("SNTP init failed: %d", rc);
-		return;
-	}
+	LOG_INF("NTP sync starting...");
 
 	struct sntp_time sntp_time = {};
-	rc = sntp_query(&ctx, 5000, &sntp_time);
-	sntp_close(&ctx);
+	bool synced = false;
 
-	if (rc < 0) {
-		LOG_WRN("SNTP query failed: %d", rc);
+	// 首先尝试配置的 NTP 服务器
+	if (ntp_config.server[0] != '\0') {
+		LOG_INF("Trying primary NTP: %s:%d", ntp_config.server, ntp_config.port);
+		if (TrySyncNtp(ntp_config.server, ntp_config.port, &sntp_time)) {
+			synced = true;
+			LOG_INF("NTP sync success from: %s", ntp_config.server);
+		}
+	}
+
+	// 失败后尝试备用服务器
+	if (!synced) {
+		for (size_t i = 0; i < ARRAY_SIZE(kNtpServers); ++i) {
+			LOG_INF("Trying backup NTP: %s", kNtpServers[i]);
+			if (TrySyncNtp(kNtpServers[i], 123, &sntp_time)) {
+				synced = true;
+				LOG_INF("NTP sync success from: %s", kNtpServers[i]);
+				break;
+			}
+			k_sleep(K_MSEC(100));  // 短暂间隔再试
+		}
+	}
+
+	if (!synced) {
+		LOG_WRN("NTP sync failed: all servers unreachable");
 		return;
 	}
 
 	// 转换为 Unix 时间戳 (SNTP 时间从 1900-01-01 开始，Unix 时间从 1970-01-01 开始)
 	time_t now = (time_t)(sntp_time.seconds - 2208988800U);
-
-	LOG_INF("Time synced via NTP: %lld", static_cast<long long>(now));
+	
+	// 转换为可读格式
+	struct tm *timeinfo = gmtime(&now);
+	if (timeinfo != nullptr) {
+		LOG_INF("NTP sync OK: %04d-%02d-%02d %02d:%02d:%02d UTC (unix: %lld)",
+			timeinfo->tm_year + 1900,
+			timeinfo->tm_mon + 1,
+			timeinfo->tm_mday,
+			timeinfo->tm_hour,
+			timeinfo->tm_min,
+			timeinfo->tm_sec,
+			static_cast<long long>(now));
+	} else {
+		LOG_INF("NTP sync OK: unix timestamp=%lld", static_cast<long long>(now));
+	}
 }
 
 void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_event)
@@ -166,17 +235,23 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		const struct wifi_status *status = static_cast<const struct wifi_status *>(cb->info);
 		bool was_connected = sta_connected_;
 		sta_connected_ = (status->status == 0);
-		// 如果刚刚连接成功，延迟触发 NTP 同步
-		if (sta_connected_ && !was_connected) {
-			k_mutex_unlock(&mutex_);
-			k_sleep(K_SECONDS(2));  // 等待 DHCP 完成
-			SyncTimeViaNtp();
-			k_mutex_lock(&mutex_, K_FOREVER);
+		if (sta_connected_) {
+			LOG_INF("WiFi connected to: %s", saved_ssid_);
+			// 如果刚刚连接成功，延迟触发 NTP 同步
+			if (!was_connected) {
+				k_mutex_unlock(&mutex_);
+				k_sleep(K_SECONDS(5));  // 等待 DHCP 完成
+				SyncTimeViaNtp();
+				k_mutex_lock(&mutex_, K_FOREVER);
+			}
+		} else {
+			LOG_WRN("WiFi connection failed: status=%d", status->status);
 		}
 		break;
 	}
 	case NET_EVENT_WIFI_DISCONNECT_RESULT:
 		sta_connected_ = false;
+		LOG_INF("WiFi disconnected");
 		break;
 	case NET_EVENT_WIFI_AP_ENABLE_RESULT:
 		ap_enabled_ = true;
@@ -186,11 +261,24 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		break;
 	case NET_EVENT_WIFI_AP_STA_CONNECTED:
 		++ap_clients_;
+		LOG_INF("AP client connected, total: %d", ap_clients_);
 		break;
 	case NET_EVENT_WIFI_AP_STA_DISCONNECTED:
 		if (ap_clients_ > 0) {
 			--ap_clients_;
 		}
+		LOG_INF("AP client disconnected, total: %d", ap_clients_);
+		break;
+	case NET_EVENT_WIFI_SCAN_RESULT: {
+		const struct wifi_scan_result *result =
+			static_cast<const struct wifi_scan_result *>(cb->info);
+		HandleScanResult(const_cast<struct wifi_scan_result *>(result));
+		break;
+	}
+	case NET_EVENT_WIFI_SCAN_DONE:
+		scan_complete_ = true;
+		k_sem_give(&scan_sem_);
+		LOG_INF("WiFi scan completed, found %u networks", scan_count_);
 		break;
 	default:
 		break;
@@ -216,26 +304,53 @@ int WifiManager::Init()
 					     NET_EVENT_WIFI_AP_ENABLE_RESULT |
 					     NET_EVENT_WIFI_AP_DISABLE_RESULT |
 					     NET_EVENT_WIFI_AP_STA_CONNECTED |
-					     NET_EVENT_WIFI_AP_STA_DISCONNECTED);
+					     NET_EVENT_WIFI_AP_STA_DISCONNECTED |
+					     NET_EVENT_WIFI_SCAN_RESULT |
+					     NET_EVENT_WIFI_SCAN_DONE);
 	net_mgmt_add_event_callback(&callback_);
 
-	int rc = EnableAp();
-	if (rc != 0) {
-		return rc;
+	// Load WiFi config
+	settings::WifiConfig wifi_config = {};
+	if (settings::LoadWifiConfig(&wifi_config) != 0) {
+		settings::FillWifiDefaults(&wifi_config);
 	}
 
-	char json_ssid[WIFI_SSID_MAX_LEN + 1];
-	char json_psk[WIFI_PSK_MAX_LEN + 1];
-	if (settings::LoadWifiCredentials(json_ssid, sizeof(json_ssid), json_psk, sizeof(json_psk)) == 0 &&
-	    json_ssid[0] != '\0') {
+	// Note: DHCP hostname setting requires CONFIG_NET_HOSTNAME_ENABLE
+	// For now, we skip this as it's not critical for functionality
+	if (wifi_config.dhcp_hostname[0] != '\0') {
+		LOG_INF("DHCP hostname would be: %s (requires CONFIG_NET_HOSTNAME_ENABLE)",
+			wifi_config.dhcp_hostname);
+	}
+
+	LOG_INF("WiFi init: AP mode %s, saved SSID: %s",
+		wifi_config.ap_enabled ? "enabled" : "disabled",
+		wifi_config.sta_ssid[0] != '\0' ? wifi_config.sta_ssid : "(none)");
+
+	// Enable AP mode if configured (default: enabled)
+	if (wifi_config.ap_enabled) {
+		// 使用配置中的 AP SSID 设置
+		BuildApSsid(&wifi_config);
+		int rc = EnableAp();
+		if (rc != 0) {
+			LOG_WRN("AP enable failed: %d", rc);
+			// Continue anyway, STA might still work
+		} else {
+			LOG_INF("AP enabled: SSID=%s, IP=%s", ap_ssid_, kApIpAddr);
+		}
+	}
+
+	// Connect to saved WiFi if credentials exist
+	if (wifi_config.sta_ssid[0] != '\0') {
 		k_mutex_lock(&mutex_, K_FOREVER);
-		(void)snprintf(saved_ssid_, sizeof(saved_ssid_), "%s", json_ssid);
+		(void)snprintf(saved_ssid_, sizeof(saved_ssid_), "%s", wifi_config.sta_ssid);
 		k_mutex_unlock(&mutex_);
 
-		rc = ConnectToNetwork(json_ssid, json_psk);
+		LOG_INF("Connecting to saved WiFi: %s", wifi_config.sta_ssid);
+		int rc = ConnectToNetwork(wifi_config.sta_ssid, wifi_config.sta_psk);
 		if (rc != 0) {
-			LOG_WRN("saved wifi connect failed: %d", rc);
+			LOG_WRN("WiFi connect failed: %d", rc);
 		}
+		// Connection result will be logged in HandleEvent
 	}
 
 	return 0;
@@ -343,6 +458,94 @@ void WifiManager::GetSnapshot(WifiSnapshot *snapshot)
 	(void)snprintf(snapshot->sta_state, sizeof(snapshot->sta_state), "%s",
 		       wifi_state_txt(static_cast<enum wifi_iface_state>(status.state)));
 	snapshot->sta_rssi = status.rssi;
+}
+
+void WifiManager::HandleScanResult(struct wifi_scan_result *result)
+{
+	if (result == nullptr || scan_count_ >= ARRAY_SIZE(scan_results_)) {
+		return;
+	}
+	
+	// Skip empty SSIDs
+	if (result->ssid_length == 0 || result->ssid[0] == '\0') {
+		return;
+	}
+	
+	// Check for duplicate
+	for (size_t i = 0; i < scan_count_; ++i) {
+		if (strncmp(scan_results_[i].ssid, reinterpret_cast<const char*>(result->ssid), WIFI_SSID_MAX_LEN) == 0) {
+			// Update if new result has better signal
+			if (result->rssi > scan_results_[i].rssi) {
+				scan_results_[i].rssi = result->rssi;
+				scan_results_[i].channel = result->channel;
+				memcpy(scan_results_[i].bssid, result->mac, 6);
+			}
+			return;
+		}
+	}
+	
+	// Add new result
+	WifiScanResult &entry = scan_results_[scan_count_++];
+	(void)snprintf(entry.ssid, sizeof(entry.ssid), "%s", reinterpret_cast<const char*>(result->ssid));
+	memcpy(entry.bssid, result->mac, 6);
+	entry.rssi = result->rssi;
+	entry.channel = result->channel;
+	entry.security = result->security;
+	entry.valid = true;
+}
+
+int WifiManager::StartScan()
+{
+	if (sta_iface_ == nullptr) {
+		return -ENODEV;
+	}
+	
+	// Clear previous results
+	scan_count_ = 0;
+	scan_complete_ = false;
+	memset(scan_results_, 0, sizeof(scan_results_));
+	
+	struct wifi_scan_params params = {};
+	params.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+	params.dwell_time_active = 100;
+	params.dwell_time_passive = 200;
+	
+	int rc = net_mgmt(NET_REQUEST_WIFI_SCAN, sta_iface_, &params, sizeof(params));
+	if (rc != 0 && rc != -EALREADY) {
+		LOG_WRN("Scan request failed: %d", rc);
+		return rc;
+	}
+	
+	return 0;
+}
+
+bool WifiManager::IsScanComplete()
+{
+	return scan_complete_;
+}
+
+void WifiManager::GetScanResults(WifiScanResult *results, size_t max_count, size_t *out_count)
+{
+	if (results == nullptr || out_count == nullptr) {
+		return;
+	}
+	
+	k_mutex_lock(&mutex_, K_FOREVER);
+	size_t count = (scan_count_ < max_count) ? scan_count_ : max_count;
+	for (size_t i = 0; i < count; ++i) {
+		results[i] = scan_results_[i];
+	}
+	*out_count = count;
+	k_mutex_unlock(&mutex_);
+}
+
+void WifiManager::ClearScanResults()
+{
+	k_mutex_lock(&mutex_, K_FOREVER);
+	scan_count_ = 0;
+	scan_complete_ = false;
+	memset(scan_results_, 0, sizeof(scan_results_));
+	k_mutex_unlock(&mutex_);
 }
 
 } // namespace fanctl

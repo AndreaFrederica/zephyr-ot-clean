@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "server": "223.5.5.5",
+  "port": 123,
+  "sync_interval_hours": 24
+}

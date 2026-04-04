@@ -88,11 +88,28 @@
 
 ### 串口 Shell
 
-波特率 115200，使用命令：
+波特率 115200，基本命令：
 ```
 fanctl status     # 查看风扇状态
 fanctl set 0 50   # 设置风扇1转速为50%
 fanctl set 1 75   # 设置风扇2转速为75%
+
+# 文件系统命令
+cd /cfg           # 切换目录
+pwd               # 显示当前目录
+ls                # 列出文件
+ls /cfg           # 列出指定目录
+cat config.json   # 查看文件内容
+mkdir test        # 创建目录
+rm file.txt       # 删除文件
+writefile config.json {"key":"value"}  # 写入文件
+
+# 编辑器命令
+edit open config.json  # 打开文件
+edit show              # 显示内容
+edit set 1 "new line"  # 修改行
+edit write             # 保存
+edit quit              # 退出
 ```
 
 ### SSH 访问（如果启用）
@@ -101,18 +118,116 @@ fanctl set 1 75   # 设置风扇2转速为75%
 ssh root@192.168.4.1 -p 2222
 ```
 
+## WiFi 配置
+
+### 方式 1：使用 WiFi 连接工具（推荐）
+
+通过串口 Shell 使用交互式 WiFi 连接工具：
+
+```shell
+# 扫描周围 WiFi 网络
+fanctl scan
+
+# 示例输出：
+# Found 4 network(s):
+# No.  SSID                             RSSI     CH     Security
+# 1    MyHomeWiFi                       -45      6      WPA/WPA2
+# 2    GuestNetwork                     -72      11     Open
+# 3    Office_WiFi                      -68      1      WPA3
+# 4    xiaomi_5G                        -55      36     WPA/WPA2
+
+# 使用工具连接（先扫描显示列表）
+wificonnect
+
+# 或者直接连接指定网络（通过序号）
+wificonnect 1 mypassword
+
+# 连接开放网络（无需密码）
+wificonnect 2
+```
+
+### 方式 2：使用传统命令
+
+```shell
+# 连接加密 WiFi
+fanctl wifi MyHomeWiFi mypassword
+
+# 连接开放 WiFi
+fanctl wifi OpenNetwork
+
+# 查看连接状态
+fanctl status
+
+# 开关 AP 热点
+fanctl ap on   # 开启热点
+fanctl ap off  # 关闭热点
+
+# 清除保存的 WiFi 密码
+fanctl clearwifi
+```
+
+### 方式 3：通过 Web 界面
+
+连接设备热点后访问 http://192.168.4.1/，在 Web 界面中配置 WiFi。
+
+### HTTP API 方式
+
+```bash
+# 扫描 WiFi 网络
+curl -X POST http://192.168.4.1/api/wifi/scan
+
+# 连接到指定 WiFi
+curl -X POST http://192.168.4.1/api/wifi -d "ssid=MyWiFi&psk=password"
+```
+
+### AP 模式配置
+
+在配置文件 `/etc/fanctl/config.json` 中可设置 AP 模式：
+
+```json
+{
+  "wifi": {
+    "sta_ssid": "",
+    "sta_psk": "",
+    "ap_enabled": true
+  }
+}
+```
+
+- `ap_enabled: true` (默认): 启动时开启 AP 热点 + 尝试连接 STA
+- `ap_enabled: false`: 仅 STA 模式，不开启 AP 热点
+
 ## 配置文件
 
-- **应用配置**: `/cfg/config.json`
+- **应用配置**: `/etc/fanctl/config.json`
+- **NTP 配置**: `/etc/fanctl/ntp.json`
 - **校准曲线**: `/cfg/adc_to_voltage.json`, `/cfg/voltage_to_percent.json`, `/cfg/percent_to_pwm.json`, `/cfg/percent_to_rpm.json`
-- **SSH 配置**: `/cfg/ssh_config.json`
-- **授权密钥**: `/cfg/authorized_keys`
+- **SSH 配置**: `/etc/ssh/sshd_config.json`
+- **授权密钥**: `/root/.ssh/authorized_keys`
 
 ## 编译和烧录
 
+### 使用 Pixi（推荐）
+
 ```bash
 # 编译
-west build -b esp32s3_fan_controller/appcpu app/fan_controller -d build_fan_controller
+pixi run fan_controller
+
+# 烧录
+pixi run fan_controller_flash
+
+# 编译并烧录
+pixi run fan_controller_deploy
+
+# 完整重新配置并烧录
+pixi run fan_controller_deploy_clean
+```
+
+### 使用 West
+
+```bash
+# 编译
+west build -b esp32s3_fan_controller/esp32s3/procpu app/fan_controller -d build_fan_controller -- -DBOARD_ROOT=%PIXI_PROJECT_ROOT%
 
 # 烧录
 west flash -d build_fan_controller

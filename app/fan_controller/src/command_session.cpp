@@ -222,9 +222,15 @@ int CommandSession::ApplyConfigFromStore() const
 
 	host_control_.Configure(config);
 
-	return (config.wifi_ssid[0] == '\0') ? wifi_manager_.ClearCredentials()
-					     : wifi_manager_.SaveAndConnect(config.wifi_ssid,
-									    config.wifi_psk);
+	// Load WiFi config separately
+	settings::WifiConfig wifi_config = {};
+	if (settings::LoadWifiConfig(&wifi_config) != 0) {
+		settings::FillWifiDefaults(&wifi_config);
+	}
+
+	return (wifi_config.sta_ssid[0] == '\0')
+		       ? wifi_manager_.ClearCredentials()
+		       : wifi_manager_.SaveAndConnect(wifi_config.sta_ssid, wifi_config.sta_psk);
 }
 
 int CommandSession::HandleLs(const char *path, SessionWriteFn writer, void *ctx) const

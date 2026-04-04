@@ -5,18 +5,6 @@
     "readonly": true,
     "description": "Configuration schema version."
   },
-  "wifi.sta_ssid": {
-    "type": "string",
-    "default": "",
-    "max_length": 32,
-    "description": "Saved STA SSID."
-  },
-  "wifi.sta_psk": {
-    "type": "string",
-    "default": "",
-    "max_length": 64,
-    "description": "Saved STA password."
-  },
   "fans.fan1.enabled": {
     "type": "boolean",
     "default": true,

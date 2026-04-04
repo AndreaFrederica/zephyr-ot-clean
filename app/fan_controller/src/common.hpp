@@ -55,6 +55,15 @@ struct HostControlSnapshot {
 	uint32_t last_alive_ago_ms;
 };
 
+struct WifiScanResult {
+	char ssid[WIFI_SSID_MAX_LEN + 1];
+	uint8_t bssid[6];
+	int8_t rssi;
+	uint8_t channel;
+	enum wifi_security_type security;
+	bool valid;
+};
+
 } // namespace fanctl
 
 #endif

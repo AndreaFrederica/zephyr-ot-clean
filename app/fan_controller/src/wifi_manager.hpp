@@ -10,6 +10,10 @@
 #include <zephyr/net/wifi_mgmt.h>
 
 #include "common.hpp"
+#include "settings_store.hpp"
+
+// Forward declaration from zephyr/net/sntp.h
+struct sntp_time;
 
 namespace fanctl {
 
@@ -23,12 +27,20 @@ public:
 	int SaveAndConnect(const char *ssid, const char *psk);
 	int ClearCredentials();
 	void GetSnapshot(WifiSnapshot *snapshot);
+	
+	// Scan API
+	int StartScan();
+	bool IsScanComplete();
+	void GetScanResults(WifiScanResult *results, size_t max_count, size_t *out_count);
+	void ClearScanResults();
 
 private:
+	bool TrySyncNtp(const char *server, int port, struct sntp_time *out_time);
 	static void EventHandler(struct net_mgmt_event_callback *cb, uint64_t mgmt_event,
 				 struct net_if *iface);
 	void HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_event);
-	void BuildApSsid();
+	void HandleScanResult(struct wifi_scan_result *result);
+	void BuildApSsid(const settings::WifiConfig *wifi_config = nullptr);
 	int ConnectToNetwork(const char *ssid, const char *psk);
 	int EnableDhcpServer();
 	int ReadStatus(struct wifi_iface_status *status);
@@ -43,6 +55,12 @@ private:
 	int ap_clients_;
 	char ap_ssid_[WIFI_SSID_MAX_LEN + 1];
 	char saved_ssid_[WIFI_SSID_MAX_LEN + 1];
+	
+	// Scan state
+	WifiScanResult scan_results_[16];
+	size_t scan_count_;
+	bool scan_complete_;
+	struct k_sem scan_sem_;
 };
 
 } // namespace fanctl

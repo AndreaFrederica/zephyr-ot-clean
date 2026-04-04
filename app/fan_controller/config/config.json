@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "host": {
+    "alive_check_enabled": false,
+    "alive_timeout_ms": 5000
+  },
+  "fans": {
+    "fan1": {
+      "enabled": true,
+      "percent": 40,
+      "use_adc_target": false
+    },
+    "fan2": {
+      "enabled": true,
+      "percent": 40,
+      "use_adc_target": false
+    }
+  }
+}

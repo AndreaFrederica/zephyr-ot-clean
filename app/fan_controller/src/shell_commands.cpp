@@ -17,6 +17,7 @@
 #include "line_editor.hpp"
 #include "settings_store.hpp"
 #include "storage.hpp"
+#include "wifi_manager.hpp"
 
 namespace fanctl::shell_commands {
 
@@ -26,6 +27,7 @@ FanController *g_fan_controller = nullptr;
 WifiManager *g_wifi_manager = nullptr;
 HostControlManager *g_host_control = nullptr;
 LineEditor g_editor;
+char g_cwd[128] = "/";
 
 int JoinArgs(char *buffer, size_t buffer_len, size_t argc, char **argv, size_t start_index)
 {
@@ -61,9 +63,15 @@ int ApplyConfigFromStore()
 		g_host_control->Configure(config);
 	}
 
-	return (config.wifi_ssid[0] == '\0') ? g_wifi_manager->ClearCredentials()
-					     : g_wifi_manager->SaveAndConnect(config.wifi_ssid,
-									      config.wifi_psk);
+	// Load WiFi config separately
+	settings::WifiConfig wifi_config = {};
+	if (settings::LoadWifiConfig(&wifi_config) != 0) {
+		settings::FillWifiDefaults(&wifi_config);
+	}
+
+	return (wifi_config.sta_ssid[0] == '\0')
+		       ? g_wifi_manager->ClearCredentials()
+		       : g_wifi_manager->SaveAndConnect(wifi_config.sta_ssid, wifi_config.sta_psk);
 }
 
 void PrintStatus(const struct shell *sh)
@@ -188,6 +196,162 @@ int CmdWifi(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	shell_print(sh, "Saved Wi-Fi credentials for %s", argv[1]);
+	return 0;
+}
+
+int CmdScan(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	shell_print(sh, "Starting Wi-Fi scan...");
+	
+	int rc = g_wifi_manager->StartScan();
+	if (rc != 0) {
+		shell_error(sh, "Scan failed: %d", rc);
+		return rc;
+	}
+	
+	// Wait for scan to complete (max 10 seconds)
+	int timeout = 100;
+	while (!g_wifi_manager->IsScanComplete() && timeout-- > 0) {
+		k_sleep(K_MSEC(100));
+	}
+	
+	if (!g_wifi_manager->IsScanComplete()) {
+		shell_warn(sh, "Scan timeout");
+	}
+	
+	// Get and display results - use static buffer to reduce stack usage
+	static WifiScanResult scan_results[16];
+	size_t count = 0;
+	g_wifi_manager->GetScanResults(scan_results, ARRAY_SIZE(scan_results), &count);
+	
+	if (count == 0) {
+		shell_print(sh, "No networks found");
+		return 0;
+	}
+	
+	shell_print(sh, "Found %u network(s):", (unsigned int)count);
+	shell_print(sh, "%-4s %-32s %-8s %-6s %s", "No.", "SSID", "RSSI", "CH", "Security");
+	
+	for (size_t i = 0; i < count; ++i) {
+		const char *security = "Unknown";
+		switch (scan_results[i].security) {
+		case WIFI_SECURITY_TYPE_NONE: security = "Open"; break;
+		case WIFI_SECURITY_TYPE_PSK: security = "WPA/WPA2"; break;
+		case WIFI_SECURITY_TYPE_PSK_SHA256: security = "WPA2"; break;
+		case WIFI_SECURITY_TYPE_SAE: security = "WPA3"; break;
+		default: break;
+		}
+		shell_print(sh, "%-4u %-32s %-8d %-6u %s", 
+			(unsigned int)(i + 1),
+			scan_results[i].ssid,
+			scan_results[i].rssi,
+			scan_results[i].channel,
+			security);
+	}
+	
+	return 0;
+}
+
+int CmdWifiConnect(const struct shell *sh, size_t argc, char **argv)
+{
+	// Usage: wificonnect [network_number] [password]
+	// If no args provided, show scan results
+	
+	if (argc == 1) {
+		// No arguments - perform scan and show results
+		shell_print(sh, "Wi-Fi Connection Utility");
+		shell_print(sh, "========================");
+		shell_print(sh, "");
+		shell_print(sh, "Starting scan...");
+		
+		int rc = g_wifi_manager->StartScan();
+		if (rc != 0) {
+			shell_error(sh, "Scan failed: %d", rc);
+			return rc;
+		}
+		
+		// Wait for scan to complete
+		int timeout = 100;
+		while (!g_wifi_manager->IsScanComplete() && timeout-- > 0) {
+			k_sleep(K_MSEC(100));
+		}
+		
+		// Use static buffer to reduce stack usage
+		static WifiScanResult connect_scan_results[16];
+		size_t count = 0;
+		g_wifi_manager->GetScanResults(connect_scan_results, ARRAY_SIZE(connect_scan_results), &count);
+		
+		if (count == 0) {
+			shell_print(sh, "No networks found");
+			return 0;
+		}
+		
+		// Display numbered list
+		shell_print(sh, "");
+		shell_print(sh, "%-4s %-32s %-8s %-6s %s", "No.", "SSID", "RSSI", "CH", "Security");
+		for (size_t i = 0; i < count; ++i) {
+			const char *security = "Unknown";
+			switch (connect_scan_results[i].security) {
+			case WIFI_SECURITY_TYPE_NONE: security = "Open"; break;
+			case WIFI_SECURITY_TYPE_PSK: security = "WPA/WPA2"; break;
+			case WIFI_SECURITY_TYPE_PSK_SHA256: security = "WPA2"; break;
+			case WIFI_SECURITY_TYPE_SAE: security = "WPA3"; break;
+			default: break;
+			}
+			shell_print(sh, "%-4u %-32s %-8d %-6u %s", 
+				(unsigned int)(i + 1),
+				connect_scan_results[i].ssid,
+				connect_scan_results[i].rssi,
+				connect_scan_results[i].channel,
+				security);
+		}
+		
+		shell_print(sh, "");
+		shell_print(sh, "Usage: wificonnect <number> [password]");
+		shell_print(sh, "Example: wificonnect 1 mypassword");
+		return 0;
+	}
+	
+	// Parse network number
+	long choice = strtol(argv[1], nullptr, 10);
+	if (choice <= 0) {
+		shell_error(sh, "Invalid network number");
+		return -EINVAL;
+	}
+	
+	// Get scan results - reuse static buffer
+	static WifiScanResult connect_scan_results[16];
+	size_t count = 0;
+	g_wifi_manager->GetScanResults(connect_scan_results, ARRAY_SIZE(connect_scan_results), &count);
+	
+	if (choice > static_cast<long>(count)) {
+		shell_error(sh, "Network number out of range, run 'wificonnect' first to scan");
+		return -EINVAL;
+	}
+	
+	const WifiScanResult &selected = connect_scan_results[choice - 1];
+	
+	// Get password
+	const char *psk = "";
+	if (argc > 2) {
+		psk = argv[2];
+	} else if (selected.security != WIFI_SECURITY_TYPE_NONE) {
+		shell_error(sh, "Network requires password: wificonnect %s <password>", argv[1]);
+		return -EINVAL;
+	}
+	
+	shell_print(sh, "Connecting to %s...", selected.ssid);
+	int rc = g_wifi_manager->SaveAndConnect(selected.ssid, psk);
+	if (rc != 0) {
+		shell_error(sh, "Connection failed: %d", rc);
+		return rc;
+	}
+	
+	shell_print(sh, "Connected successfully!");
+	PrintStatus(sh);
 	return 0;
 }
 
@@ -379,6 +543,53 @@ int CmdWriteFile(const struct shell *sh, size_t argc, char **argv)
 	}
 
 	shell_print(sh, "Wrote %u bytes to %s", static_cast<unsigned int>(strlen(content)), argv[1]);
+	return 0;
+}
+
+int CmdCd(const struct shell *sh, size_t argc, char **argv)
+{
+	const char *path = (argc > 1) ? argv[1] : "/";
+	char resolved[128];
+	
+	// Handle relative path
+	if (path[0] != '/') {
+		if (strcmp(g_cwd, "/") == 0) {
+			snprintf(resolved, sizeof(resolved), "/%s", path);
+		} else {
+			snprintf(resolved, sizeof(resolved), "%s/%s", g_cwd, path);
+		}
+	} else {
+		snprintf(resolved, sizeof(resolved), "%s", path);
+	}
+	
+	// Check if directory exists
+	char fs_path[128];
+	int rc = storage::ResolveManagedPath(resolved, fs_path, sizeof(fs_path));
+	if (rc != 0) {
+		shell_error(sh, "cd: %s: Invalid path", path);
+		return rc;
+	}
+	
+	struct fs_dir_t dir;
+	fs_dir_t_init(&dir);
+	rc = fs_opendir(&dir, fs_path);
+	if (rc != 0) {
+		shell_error(sh, "cd: %s: Not a directory", path);
+		return rc;
+	}
+	fs_closedir(&dir);
+	
+	// Update cwd
+	snprintf(g_cwd, sizeof(g_cwd), "%s", resolved);
+	return 0;
+}
+
+int CmdPwd(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	
+	shell_print(sh, "%s", g_cwd);
 	return 0;
 }
 
@@ -620,6 +831,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(set, NULL, "fanctl set <1|2> <0-100> <on|off>", CmdSet, 4, 0),
 	SHELL_CMD_ARG(wifi, NULL, "fanctl wifi <ssid> [psk]", CmdWifi, 2, 1),
 	SHELL_CMD_ARG(ap, NULL, "fanctl ap <on|off>", CmdAp, 2, 0),
+	SHELL_CMD(scan, NULL, "Scan for Wi-Fi networks", CmdScan),
 	SHELL_CMD(config, NULL, "Show JSON config file", CmdConfig),
 	SHELL_CMD(clearwifi, NULL, "Clear stored Wi-Fi credentials", CmdClearWifi),
 	SHELL_CMD(reboot, NULL, "Reboot the controller", CmdReboot),
@@ -654,8 +866,11 @@ SHELL_CMD_REGISTER(show, &sub_show, "Operational show commands", NULL);
 SHELL_CMD_ARG_REGISTER(ls, NULL, "ls [path]", CmdLs, 1, 1);
 SHELL_CMD_ARG_REGISTER(cat, NULL, "cat <path>", CmdCat, 2, 0);
 SHELL_CMD_ARG_REGISTER(mkdir, NULL, "mkdir <path>", CmdMkdir, 2, 0);
+SHELL_CMD_ARG_REGISTER(cd, NULL, "cd <path>", CmdCd, 1, 1);
+SHELL_CMD_REGISTER(pwd, NULL, "Print current directory", CmdPwd);
 SHELL_CMD_ARG_REGISTER(rm, NULL, "rm <path>", CmdRm, 2, 0);
 SHELL_CMD_ARG_REGISTER(writefile, NULL, "writefile <path> <text>", CmdWriteFile, 3, 16);
+SHELL_CMD_ARG_REGISTER(wificonnect, NULL, "Wi-Fi connection utility: wificonnect [number] [password]", CmdWifiConnect, 1, 2);
 
 } // namespace
 

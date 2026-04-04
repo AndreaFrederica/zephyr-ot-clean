@@ -13,8 +13,6 @@
 namespace fanctl::settings {
 
 struct AppConfig {
-	char wifi_ssid[WIFI_SSID_MAX_LEN + 1];
-	char wifi_psk[WIFI_PSK_MAX_LEN + 1];
 	bool fan_enabled[kFanCount];
 	uint8_t fan_percent[kFanCount];
 	bool fan_use_adc_target[kFanCount];
@@ -40,6 +38,21 @@ struct NtpConfig {
 	int sync_interval_hours;
 };
 
+struct WifiConfig {
+	char sta_ssid[WIFI_SSID_MAX_LEN + 1];
+	char sta_psk[WIFI_PSK_MAX_LEN + 1];
+	bool ap_enabled;
+	char ap_ssid_prefix[16];
+	bool ap_ssid_use_mac_suffix;
+	char ap_ssid_custom[33];
+	int ap_channel;
+	bool ap_hidden;
+	int ap_max_clients;
+	char dhcp_hostname[32];
+	bool sta_auto_reconnect;
+	int sta_scan_threshold;
+};
+
 int Init();
 void GetDefaultConfig(AppConfig *config);
 int LoadConfig(AppConfig *config);
@@ -53,6 +66,12 @@ int LoadNtpConfig(NtpConfig *config);
 int ReadNtpConfigJson(char *json, size_t json_len, size_t *out_len);
 int WriteNtpConfigJson(const char *json, size_t json_len);
 const char *GetNtpConfigRelativePath();
+
+void FillWifiDefaults(WifiConfig *config);
+int LoadWifiConfig(WifiConfig *config);
+int ReadWifiConfigJson(char *json, size_t json_len, size_t *out_len);
+int WriteWifiConfigJson(const char *json, size_t json_len);
+const char *GetWifiConfigRelativePath();
 void SaveWifiCredentials(const char *ssid, const char *psk);
 void ClearWifiCredentials();
 int LoadWifiCredentials(char *ssid, size_t ssid_len, char *psk, size_t psk_len);

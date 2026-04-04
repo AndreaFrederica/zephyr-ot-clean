@@ -13,6 +13,7 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
 
+#include "generated/config_assets.hpp"
 #include "storage.hpp"
 
 namespace fanctl::settings {
@@ -33,18 +34,6 @@ constexpr const char *kFieldDefinitionsJson = R"json({
     "default": 1,
     "readonly": true,
     "description": "Configuration schema version."
-  },
-  "wifi.sta_ssid": {
-    "type": "string",
-    "default": "",
-    "max_length": 32,
-    "description": "Saved STA SSID."
-  },
-  "wifi.sta_psk": {
-    "type": "string",
-    "default": "",
-    "max_length": 64,
-    "description": "Saved STA password."
   },
   "fans.fan1.enabled": {
     "type": "boolean",
@@ -106,13 +95,19 @@ constexpr const char *kSshConfigJson = R"json({
 })json";
 
 constexpr const char *kNtpConfigRelativePath = "/etc/fanctl/ntp.json";
+constexpr const char *kWifiConfigRelativePath = "/etc/fanctl/wifi.json";
 
-constexpr const char *kNtpConfigJson = R"json({
-  "enabled": true,
-  "server": "223.5.5.5",
-  "port": 123,
-  "sync_interval_hours": 24
-})json";
+const char *GetDefaultConfigContent(const char *path, size_t *out_size)
+{
+	for (size_t i = 0; i < kConfigAssetCount; ++i) {
+		if (strcmp(path, kConfigAssets[i].path) == 0) {
+			*out_size = kConfigAssets[i].size;
+			return reinterpret_cast<const char *>(kConfigAssets[i].data);
+		}
+	}
+	*out_size = 0;
+	return nullptr;
+}
 
 constexpr const char *kAuthorizedKeysTemplate =
 	"# Add one OpenSSH public key per line.\n"
@@ -273,8 +268,6 @@ void FillDefaults(AppConfig *config)
 		return;
 	}
 
-	config->wifi_ssid[0] = '\0';
-	config->wifi_psk[0] = '\0';
 	for (size_t i = 0; i < kFanCount; ++i) {
 		config->fan_enabled[i] = true;
 		config->fan_percent[i] = 40;
@@ -314,26 +307,17 @@ void FillNtpDefaults(NtpConfig *config)
 	config->sync_interval_hours = 24;
 }
 
+
 int BuildJson(const AppConfig *config, char *json, size_t json_len)
 {
 	if (config == nullptr || json == nullptr || json_len == 0U) {
 		return -EINVAL;
 	}
 
-	char ssid[(WIFI_SSID_MAX_LEN * 2U) + 8U];
-	char psk[(WIFI_PSK_MAX_LEN * 2U) + 8U];
-
-	EscapeJsonString(config->wifi_ssid, ssid, sizeof(ssid));
-	EscapeJsonString(config->wifi_psk, psk, sizeof(psk));
-
 	int written = snprintf(
 		json, json_len,
 		"{\n"
 		"  \"version\": 1,\n"
-		"  \"wifi\": {\n"
-		"    \"sta_ssid\": \"%s\",\n"
-		"    \"sta_psk\": \"%s\"\n"
-		"  },\n"
 		"  \"host\": {\n"
 		"    \"alive_check_enabled\": %s,\n"
 		"    \"alive_timeout_ms\": %u\n"
@@ -351,7 +335,7 @@ int BuildJson(const AppConfig *config, char *json, size_t json_len)
 		"    }\n"
 		"  }\n"
 		"}\n",
-		ssid, psk, config->host_alive_check_enabled ? "true" : "false",
+		config->host_alive_check_enabled ? "true" : "false",
 		static_cast<unsigned int>(config->host_alive_timeout_ms),
 		config->fan_enabled[0] ? "true" : "false", config->fan_percent[0],
 		config->fan_use_adc_target[0] ? "true" : "false",
@@ -420,6 +404,55 @@ int BuildNtpJson(const NtpConfig *config, char *json, size_t json_len)
 	return (written > 0 && static_cast<size_t>(written) < json_len) ? 0 : -ENOSPC;
 }
 
+int BuildWifiJson(const WifiConfig *config, char *json, size_t json_len)
+{
+	if (config == nullptr || json == nullptr || json_len == 0U) {
+		return -EINVAL;
+	}
+
+	char ssid[(WIFI_SSID_MAX_LEN * 2U) + 8U];
+	char psk[(WIFI_PSK_MAX_LEN * 2U) + 8U];
+	char ap_ssid_custom[(WIFI_SSID_MAX_LEN * 2U) + 8U];
+	char ap_ssid_prefix[32];
+	char dhcp_hostname[64];
+
+	EscapeJsonString(config->sta_ssid, ssid, sizeof(ssid));
+	EscapeJsonString(config->sta_psk, psk, sizeof(psk));
+	EscapeJsonString(config->ap_ssid_custom, ap_ssid_custom, sizeof(ap_ssid_custom));
+	EscapeJsonString(config->ap_ssid_prefix, ap_ssid_prefix, sizeof(ap_ssid_prefix));
+	EscapeJsonString(config->dhcp_hostname, dhcp_hostname, sizeof(dhcp_hostname));
+
+	int written = snprintf(
+		json, json_len,
+		"{\n"
+		"  \"sta_ssid\": \"%s\",\n"
+		"  \"sta_psk\": \"%s\",\n"
+		"  \"ap_enabled\": %s,\n"
+		"  \"ap_ssid_prefix\": \"%s\",\n"
+		"  \"ap_ssid_use_mac_suffix\": %s,\n"
+		"  \"ap_ssid_custom\": \"%s\",\n"
+		"  \"ap_channel\": %d,\n"
+		"  \"ap_hidden\": %s,\n"
+		"  \"ap_max_clients\": %d,\n"
+		"  \"dhcp_hostname\": \"%s\",\n"
+		"  \"sta_auto_reconnect\": %s,\n"
+		"  \"sta_scan_threshold\": %d\n"
+		"}\n",
+		ssid, psk,
+		config->ap_enabled ? "true" : "false",
+		ap_ssid_prefix,
+		config->ap_ssid_use_mac_suffix ? "true" : "false",
+		ap_ssid_custom,
+		config->ap_channel,
+		config->ap_hidden ? "true" : "false",
+		config->ap_max_clients,
+		dhcp_hostname,
+		config->sta_auto_reconnect ? "true" : "false",
+		config->sta_scan_threshold);
+
+	return (written > 0 && static_cast<size_t>(written) < json_len) ? 0 : -ENOSPC;
+}
+
 int ParseJson(const char *json, AppConfig *config)
 {
 	if (json == nullptr || config == nullptr) {
@@ -429,20 +462,9 @@ int ParseJson(const char *json, AppConfig *config)
 	AppConfig parsed = {};
 	FillDefaults(&parsed);
 
-	const char *wifi_section = nullptr;
 	const char *fan1_section = nullptr;
 	const char *fan2_section = nullptr;
 	const char *value = nullptr;
-
-	if (!FindJsonKey(json, "wifi", &wifi_section) || !FindJsonKey(wifi_section, "sta_ssid", &value) ||
-	    !ParseJsonStringAt(value, parsed.wifi_ssid, sizeof(parsed.wifi_ssid))) {
-		return -EINVAL;
-	}
-
-	if (!FindJsonKey(wifi_section, "sta_psk", &value) ||
-	    !ParseJsonStringAt(value, parsed.wifi_psk, sizeof(parsed.wifi_psk))) {
-		return -EINVAL;
-	}
 
 	const char *host_section = nullptr;
 	int timeout_ms = 0;
@@ -585,6 +607,108 @@ int ParseNtpJson(const char *json, NtpConfig *config)
 	return 0;
 }
 
+int ParseWifiJson(const char *json, WifiConfig *config)
+{
+	if (json == nullptr || config == nullptr) {
+		return -EINVAL;
+	}
+
+	WifiConfig parsed = {};
+	FillWifiDefaults(&parsed);
+	const char *value = nullptr;
+
+	// sta_ssid is optional
+	if (FindJsonKey(json, "sta_ssid", &value)) {
+		if (!ParseJsonStringAt(value, parsed.sta_ssid, sizeof(parsed.sta_ssid))) {
+			return -EINVAL;
+		}
+	}
+
+	// sta_psk is optional
+	if (FindJsonKey(json, "sta_psk", &value)) {
+		if (!ParseJsonStringAt(value, parsed.sta_psk, sizeof(parsed.sta_psk))) {
+			return -EINVAL;
+		}
+	}
+
+	// ap_enabled is optional (defaults to true)
+	if (FindJsonKey(json, "ap_enabled", &value)) {
+		if (!ParseJsonBoolAt(value, &parsed.ap_enabled)) {
+			return -EINVAL;
+		}
+	}
+
+	// ap_ssid_prefix is optional
+	if (FindJsonKey(json, "ap_ssid_prefix", &value)) {
+		if (!ParseJsonStringAt(value, parsed.ap_ssid_prefix, sizeof(parsed.ap_ssid_prefix))) {
+			return -EINVAL;
+		}
+	}
+
+	// ap_ssid_use_mac_suffix is optional
+	if (FindJsonKey(json, "ap_ssid_use_mac_suffix", &value)) {
+		if (!ParseJsonBoolAt(value, &parsed.ap_ssid_use_mac_suffix)) {
+			return -EINVAL;
+		}
+	}
+
+	// ap_ssid_custom is optional
+	if (FindJsonKey(json, "ap_ssid_custom", &value)) {
+		if (!ParseJsonStringAt(value, parsed.ap_ssid_custom, sizeof(parsed.ap_ssid_custom))) {
+			return -EINVAL;
+		}
+	}
+
+	// ap_channel is optional
+	if (FindJsonKey(json, "ap_channel", &value)) {
+		if (!ParseJsonIntAt(value, &parsed.ap_channel) ||
+		    parsed.ap_channel < 0 || parsed.ap_channel > 14) {
+			return -EINVAL;
+		}
+	}
+
+	// ap_hidden is optional
+	if (FindJsonKey(json, "ap_hidden", &value)) {
+		if (!ParseJsonBoolAt(value, &parsed.ap_hidden)) {
+			return -EINVAL;
+		}
+	}
+
+	// ap_max_clients is optional
+	if (FindJsonKey(json, "ap_max_clients", &value)) {
+		if (!ParseJsonIntAt(value, &parsed.ap_max_clients) ||
+		    parsed.ap_max_clients < 1 || parsed.ap_max_clients > 10) {
+			return -EINVAL;
+		}
+	}
+
+	// dhcp_hostname is optional
+	if (FindJsonKey(json, "dhcp_hostname", &value)) {
+		if (!ParseJsonStringAt(value, parsed.dhcp_hostname, sizeof(parsed.dhcp_hostname)) ||
+		    parsed.dhcp_hostname[0] == '\0') {
+			return -EINVAL;
+		}
+	}
+
+	// sta_auto_reconnect is optional
+	if (FindJsonKey(json, "sta_auto_reconnect", &value)) {
+		if (!ParseJsonBoolAt(value, &parsed.sta_auto_reconnect)) {
+			return -EINVAL;
+		}
+	}
+
+	// sta_scan_threshold is optional
+	if (FindJsonKey(json, "sta_scan_threshold", &value)) {
+		if (!ParseJsonIntAt(value, &parsed.sta_scan_threshold) ||
+		    parsed.sta_scan_threshold < -100 || parsed.sta_scan_threshold > 0) {
+			return -EINVAL;
+		}
+	}
+
+	*config = parsed;
+	return 0;
+}
+
 int MigrateLegacyFile(const char *legacy_path, const char *target_path)
 {
 	char current[1024];
@@ -634,34 +758,35 @@ int EnsureConfigFiles()
 	}
 
 	if (storage::ReadTextFile(kConfigRelativePath, current, sizeof(current), &current_len) != 0) {
-		AppConfig defaults = {};
-		char json[512];
-
-		FillDefaults(&defaults);
-		int rc = BuildJson(&defaults, json, sizeof(json));
-		if (rc != 0) {
-			return rc;
-		}
-
-		rc = storage::WriteTextFile(kConfigRelativePath, json, strlen(json));
-		if (rc != 0) {
-			return rc;
+		size_t default_size = 0;
+		const char *default_content = GetDefaultConfigContent("config.json", &default_size);
+		if (default_content != nullptr) {
+			int rc = storage::WriteTextFile(kConfigRelativePath, default_content, default_size);
+			if (rc != 0) {
+				return rc;
+			}
 		}
 	}
 
 	if (storage::ReadTextFile(kNtpConfigRelativePath, current, sizeof(current), &current_len) != 0) {
-		NtpConfig defaults = {};
-		char json[256];
-
-		FillNtpDefaults(&defaults);
-		int rc = BuildNtpJson(&defaults, json, sizeof(json));
-		if (rc != 0) {
-			return rc;
+		size_t default_size = 0;
+		const char *default_content = GetDefaultConfigContent("ntp.json", &default_size);
+		if (default_content != nullptr) {
+			int rc = storage::WriteTextFile(kNtpConfigRelativePath, default_content, default_size);
+			if (rc != 0) {
+				return rc;
+			}
 		}
+	}
 
-		rc = storage::WriteTextFile(kNtpConfigRelativePath, json, strlen(json));
-		if (rc != 0) {
-			return rc;
+	if (storage::ReadTextFile(kWifiConfigRelativePath, current, sizeof(current), &current_len) != 0) {
+		size_t default_size = 0;
+		const char *default_content = GetDefaultConfigContent("wifi.json", &default_size);
+		if (default_content != nullptr) {
+			int rc = storage::WriteTextFile(kWifiConfigRelativePath, default_content, default_size);
+			if (rc != 0) {
+				return rc;
+			}
 		}
 	}
 
@@ -692,7 +817,39 @@ int SaveNtpConfig(const NtpConfig *config)
 	return storage::WriteTextFile(kNtpConfigRelativePath, json, strlen(json));
 }
 
+int SaveWifiConfig(const WifiConfig *config)
+{
+	char json[768];
+	int rc = BuildWifiJson(config, json, sizeof(json));
+
+	if (rc != 0) {
+		return rc;
+	}
+
+	return storage::WriteTextFile(kWifiConfigRelativePath, json, strlen(json));
+}
+
 } // namespace
+
+void FillWifiDefaults(WifiConfig *config)
+{
+	if (config == nullptr) {
+		return;
+	}
+
+	config->sta_ssid[0] = '\0';
+	config->sta_psk[0] = '\0';
+	config->ap_enabled = true;
+	(void)snprintf(config->ap_ssid_prefix, sizeof(config->ap_ssid_prefix), "fanctl");
+	config->ap_ssid_use_mac_suffix = true;
+	config->ap_ssid_custom[0] = '\0';
+	config->ap_channel = 0;
+	config->ap_hidden = false;
+	config->ap_max_clients = 4;
+	(void)snprintf(config->dhcp_hostname, sizeof(config->dhcp_hostname), "fanctl");
+	config->sta_auto_reconnect = true;
+	config->sta_scan_threshold = -80;
+}
 
 int Init()
 {
@@ -811,15 +968,15 @@ int WriteSshConfigJson(const char *json, size_t json_len)
 
 void SaveWifiCredentials(const char *ssid, const char *psk)
 {
-	AppConfig config = {};
+	WifiConfig config = {};
 
-	if (LoadConfig(&config) != 0) {
-		FillDefaults(&config);
+	if (LoadWifiConfig(&config) != 0) {
+		FillWifiDefaults(&config);
 	}
 
-	(void)snprintf(config.wifi_ssid, sizeof(config.wifi_ssid), "%s", ssid != nullptr ? ssid : "");
-	(void)snprintf(config.wifi_psk, sizeof(config.wifi_psk), "%s", psk != nullptr ? psk : "");
-	(void)SaveConfig(&config);
+	(void)snprintf(config.sta_ssid, sizeof(config.sta_ssid), "%s", ssid != nullptr ? ssid : "");
+	(void)snprintf(config.sta_psk, sizeof(config.sta_psk), "%s", psk != nullptr ? psk : "");
+	(void)SaveWifiConfig(&config);
 }
 
 void ClearWifiCredentials()
@@ -829,19 +986,19 @@ void ClearWifiCredentials()
 
 int LoadWifiCredentials(char *ssid, size_t ssid_len, char *psk, size_t psk_len)
 {
-	AppConfig config = {};
-	int rc = LoadConfig(&config);
+	WifiConfig config = {};
+	int rc = LoadWifiConfig(&config);
 
 	if (rc != 0) {
 		return rc;
 	}
 
 	if (ssid != nullptr && ssid_len > 0U) {
-		(void)snprintf(ssid, ssid_len, "%s", config.wifi_ssid);
+		(void)snprintf(ssid, ssid_len, "%s", config.sta_ssid);
 	}
 
 	if (psk != nullptr && psk_len > 0U) {
-		(void)snprintf(psk, psk_len, "%s", config.wifi_psk);
+		(void)snprintf(psk, psk_len, "%s", config.sta_psk);
 	}
 
 	return 0;
@@ -914,6 +1071,55 @@ int WriteNtpConfigJson(const char *json, size_t json_len)
 	}
 
 	return SaveNtpConfig(&config);
+}
+
+const char *GetWifiConfigRelativePath()
+{
+	return kWifiConfigRelativePath;
+}
+
+int LoadWifiConfig(WifiConfig *config)
+{
+	if (config == nullptr) {
+		return -EINVAL;
+	}
+
+	char json[768];
+	size_t json_len = 0U;
+	int rc = storage::ReadTextFile(kWifiConfigRelativePath, json, sizeof(json), &json_len);
+	if (rc != 0) {
+		return rc;
+	}
+
+	return ParseWifiJson(json, config);
+}
+
+int ReadWifiConfigJson(char *json, size_t json_len, size_t *out_len)
+{
+	return storage::ReadTextFile(kWifiConfigRelativePath, json, json_len, out_len);
+}
+
+int WriteWifiConfigJson(const char *json, size_t json_len)
+{
+	if (json == nullptr || json_len == 0U) {
+		return -EINVAL;
+	}
+
+	char buffer[768];
+	if (json_len >= sizeof(buffer)) {
+		return -ENOSPC;
+	}
+
+	memcpy(buffer, json, json_len);
+	buffer[json_len] = '\0';
+
+	WifiConfig config = {};
+	int rc = ParseWifiJson(buffer, &config);
+	if (rc != 0) {
+		return rc;
+	}
+
+	return SaveWifiConfig(&config);
 }
 
 int LoadFanState(size_t index, bool *enabled, uint8_t *percent)

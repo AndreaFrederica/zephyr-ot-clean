@@ -10,6 +10,8 @@ set(GENERATED_WEB_HEADER ${GENERATED_WEB_DIR}/generated/web_assets.hpp)
 set(GENERATED_WEB_SOURCE ${GENERATED_WEB_DIR}/generated/web_assets.cpp)
 set(GENERATED_CURVE_HEADER ${GENERATED_WEB_DIR}/generated/default_curve_assets.hpp)
 set(GENERATED_CURVE_SOURCE ${GENERATED_WEB_DIR}/generated/default_curve_assets.cpp)
+set(GENERATED_CONFIG_HEADER ${GENERATED_WEB_DIR}/generated/config_assets.hpp)
+set(GENERATED_CONFIG_SOURCE ${GENERATED_WEB_DIR}/generated/config_assets.cpp)
 
 add_custom_command(
   OUTPUT ${GENERATED_WEB_HEADER} ${GENERATED_WEB_SOURCE}
@@ -47,6 +49,23 @@ add_custom_command(
   VERBATIM
 )
 
+add_custom_command(
+  OUTPUT ${GENERATED_CONFIG_HEADER} ${GENERATED_CONFIG_SOURCE}
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_config_assets.py
+          ${GENERATED_CONFIG_HEADER}
+          ${GENERATED_CONFIG_SOURCE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/config/config.json config_asset_config_json
+          ${CMAKE_CURRENT_SOURCE_DIR}/config/wifi.json config_asset_wifi_json
+          ${CMAKE_CURRENT_SOURCE_DIR}/config/ntp.json config_asset_ntp_json
+  DEPENDS
+          ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_config_assets.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/config/config.json
+          ${CMAKE_CURRENT_SOURCE_DIR}/config/wifi.json
+          ${CMAKE_CURRENT_SOURCE_DIR}/config/ntp.json
+  VERBATIM
+)
+
 target_sources(app PRIVATE
   src/main.cpp
   src/curve_profiles.cpp
@@ -62,6 +81,7 @@ target_sources(app PRIVATE
   src/host_control_manager.cpp
   ${GENERATED_WEB_SOURCE}
   ${GENERATED_CURVE_SOURCE}
+  ${GENERATED_CONFIG_SOURCE}
 )
 
 target_include_directories(app PRIVATE
