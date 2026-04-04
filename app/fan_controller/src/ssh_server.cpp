@@ -73,7 +73,7 @@ void SessionWriter(void *ctx, const char *text, size_t len)
 	(void)SendStreamAll(static_cast<WOLFSSH *>(ctx), text, len);
 }
 
-int ReadCommandLine(WOLFSSH *ssh, char *buffer, size_t buffer_len)
+int ReadCommandLine(WOLFSSH *ssh, char *buffer, size_t buffer_len, CommandSession *session)
 {
 	if (ssh == nullptr || buffer == nullptr || buffer_len < 2U) {
 		return -EINVAL;
@@ -103,6 +103,24 @@ int ReadCommandLine(WOLFSSH *ssh, char *buffer, size_t buffer_len)
 				--offset;
 				buffer[offset] = '\0';
 				(void)SendStreamAll(ssh, "\b \b", 3);
+			}
+			continue;
+		}
+
+		if (ch == '\t' && session != nullptr) {
+			// Handle Tab completion
+			buffer[offset] = '\0';
+			char completion[64];
+			int complete_rc = session->Complete(buffer, SessionWriter, ssh, completion,
+							    sizeof(completion));
+			if (complete_rc > 0 && completion[0] != '\0') {
+				// Apply the completion
+				size_t comp_len = strlen(completion);
+				if (offset + comp_len < buffer_len - 1) {
+					memcpy(buffer + offset, completion, comp_len + 1);
+					offset += comp_len;
+					(void)SendStreamAll(ssh, completion, comp_len);
+				}
 			}
 			continue;
 		}
@@ -501,7 +519,7 @@ int SshServer::HandleClient(int client)
 			(void)SendStreamAll(ssh, prompt, strlen(prompt));
 
 			char line[512];
-			rc = ReadCommandLine(ssh, line, sizeof(line));
+			rc = ReadCommandLine(ssh, line, sizeof(line), &connection.session);
 			if (rc < 0) {
 				break;
 			}

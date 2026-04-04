@@ -965,4 +965,183 @@ int CommandSession::Execute(const char *command_line, SessionWriteFn writer, voi
 	return -ENOENT;
 }
 
+namespace {
+
+const char *kTopLevelCommands[] = {
+	"help", "pwd", "cd", "ls", "cat", "touch", "mkdir", "rm",
+	"writefile", "fanctl", "show", "edit", "whoami", "hostname",
+	"uname", "echo", "clear", "exit", "reboot", nullptr
+};
+
+const char *kFanctlSubcommands[] = {
+	"status", "set", "wifi", "ap", "config", "clearwifi", nullptr
+};
+
+const char *kShowSubcommands[] = {
+	"fans", "curves", nullptr
+};
+
+const char *kEditSubcommands[] = {
+	"open", "status", "show", "set", "ins", "app", "del", "write", "saveas", "quit", nullptr
+};
+
+const char *kApOptions[] = { "on", "off", nullptr };
+
+void EmitCompletionMatch(SessionWriteFn writer, void *ctx, const char *match, bool add_space)
+{
+	if (add_space) {
+		char buffer[64];
+		snprintf(buffer, sizeof(buffer), "%s ", match);
+		writer(ctx, buffer, strlen(buffer));
+	} else {
+		writer(ctx, match, strlen(match));
+	}
+}
+
+} // namespace
+
+int CommandSession::Complete(const char *command_line, SessionWriteFn writer, void *ctx,
+			     char *completion, size_t completion_len)
+{
+	if (command_line == nullptr || completion == nullptr || completion_len == 0U) {
+		return -EINVAL;
+	}
+
+	completion[0] = '\0';
+
+	// Parse command line to get current word
+	char line[256];
+	snprintf(line, sizeof(line), "%s", command_line);
+
+	// Find the last word being typed
+	char *last_word = line;
+	char *cursor = line;
+	bool in_space = false;
+	int argc = 0;
+
+	while (*cursor != '\0') {
+		if (*cursor == ' ') {
+			if (!in_space) {
+				in_space = true;
+				*cursor = '\0';
+				last_word = cursor + 1;
+				argc++;
+			}
+		} else {
+			in_space = false;
+		}
+		cursor++;
+	}
+
+	// Find the command being typed (first argument)
+	char *first_arg = line;
+	char *second_arg = nullptr;
+	bool found_space = false;
+
+	for (char *p = line; *p != '\0'; p++) {
+		if (*p == ' ') {
+			*p = '\0';
+			if (!found_space) {
+				second_arg = p + 1;
+				found_space = true;
+			}
+		}
+	}
+
+	const char *prefix = last_word;
+	size_t prefix_len = strlen(prefix);
+	const char **candidates = nullptr;
+	const char *match = nullptr;
+	int match_count = 0;
+
+	// Determine which set of candidates to use based on context
+	if (!found_space || (found_space && second_arg == last_word)) {
+		// Completing top-level command
+		if (strcmp(first_arg, "fanctl") == 0) {
+			candidates = kFanctlSubcommands;
+		} else if (strcmp(first_arg, "show") == 0) {
+			candidates = kShowSubcommands;
+		} else if (strcmp(first_arg, "edit") == 0) {
+			candidates = kEditSubcommands;
+		} else if (strcmp(first_arg, "ap") == 0) {
+			candidates = kApOptions;
+		} else {
+			candidates = kTopLevelCommands;
+		}
+	} else {
+		// Completing arguments for subcommands
+		if (strcmp(first_arg, "fanctl") == 0) {
+			// fanctl set <fan> <percent> <on|off>
+			if (second_arg != nullptr && strcmp(second_arg, "set") == 0) {
+				// Check which argument position we're at
+				int set_argc = 0;
+				for (char *p = line; *p != '\0'; p++) {
+					if (*p == ' ') set_argc++;
+				}
+				// Count spaces after "set"
+				int spaces_after_set = 0;
+				bool in_set = false;
+				for (const char *p = command_line; *p != '\0'; p++) {
+					if (!in_set && strncmp(p, "set ", 4) == 0) {
+						in_set = true;
+						p += 3;
+						continue;
+					}
+					if (in_set && *p == ' ') spaces_after_set++;
+				}
+				if (spaces_after_set == 2) {
+					// Completing on/off
+					candidates = kApOptions;
+				}
+			}
+		} else if (strcmp(first_arg, "ap") == 0 ||
+			   (second_arg != nullptr && strcmp(second_arg, "ap") == 0)) {
+			candidates = kApOptions;
+		}
+	}
+
+	// Find matches
+	if (candidates != nullptr) {
+		for (int i = 0; candidates[i] != nullptr; i++) {
+			if (strncmp(candidates[i], prefix, prefix_len) == 0) {
+				match_count++;
+				if (match == nullptr) {
+					match = candidates[i];
+				}
+			}
+		}
+	}
+
+	// Handle completion result
+	if (match_count == 1 && match != nullptr) {
+		// Single match - complete it
+		const char *suffix = match + prefix_len;
+		if (suffix[0] != '\0') {
+			snprintf(completion, completion_len, "%s", suffix);
+			// Add space if completing a full command/subcommand
+			if (completion_len > strlen(completion) + 1) {
+				strcat(completion, " ");
+			}
+		}
+		return 1;
+	} else if (match_count > 1) {
+		// Multiple matches - show options
+		Emit(writer, ctx, "\r\n");
+		for (int i = 0; candidates[i] != nullptr; i++) {
+			if (strncmp(candidates[i], prefix, prefix_len) == 0) {
+				Emitf(writer, ctx, "  %s", candidates[i]);
+			}
+		}
+		Emit(writer, ctx, "\r\n");
+		// Redraw prompt
+		char prompt[64];
+		BuildPrompt(prompt, sizeof(prompt));
+		Emit(writer, ctx, prompt);
+		Emit(writer, ctx, command_line);
+		return match_count;
+	}
+
+	return 0;
+}
+
 } // namespace fanctl

@@ -105,6 +105,15 @@ constexpr const char *kSshConfigJson = R"json({
   "authorized_keys_path": "/root/.ssh/authorized_keys"
 })json";
 
+constexpr const char *kNtpConfigRelativePath = "/etc/fanctl/ntp.json";
+
+constexpr const char *kNtpConfigJson = R"json({
+  "enabled": true,
+  "server": "223.5.5.5",
+  "port": 123,
+  "sync_interval_hours": 24
+})json";
+
 constexpr const char *kAuthorizedKeysTemplate =
 	"# Add one OpenSSH public key per line.\n"
 	"# Example:\n"
@@ -293,6 +302,18 @@ void FillSshDefaults(SshConfig *config)
 		       kAuthorizedKeysRelativePath);
 }
 
+void FillNtpDefaults(NtpConfig *config)
+{
+	if (config == nullptr) {
+		return;
+	}
+
+	config->enabled = true;
+	(void)snprintf(config->server, sizeof(config->server), "223.5.5.5");
+	config->port = 123;
+	config->sync_interval_hours = 24;
+}
+
 int BuildJson(const AppConfig *config, char *json, size_t json_len)
 {
 	if (config == nullptr || json == nullptr || json_len == 0U) {
@@ -372,6 +393,29 @@ int BuildSshJson(const SshConfig *config, char *json, size_t json_len)
 		config->enabled ? "true" : "false", config->listen_port, host_key_path, username,
 		password, config->allow_password_auth ? "true" : "false",
 		config->allow_public_key_auth ? "true" : "false", authorized_keys_path);
+
+	return (written > 0 && static_cast<size_t>(written) < json_len) ? 0 : -ENOSPC;
+}
+
+int BuildNtpJson(const NtpConfig *config, char *json, size_t json_len)
+{
+	if (config == nullptr || json == nullptr || json_len == 0U) {
+		return -EINVAL;
+	}
+
+	char server[128];
+
+	EscapeJsonString(config->server, server, sizeof(server));
+
+	int written = snprintf(
+		json, json_len,
+		"{\n"
+		"  \"enabled\": %s,\n"
+		"  \"server\": \"%s\",\n"
+		"  \"port\": %d,\n"
+		"  \"sync_interval_hours\": %d\n"
+		"}\n",
+		config->enabled ? "true" : "false", server, config->port, config->sync_interval_hours);
 
 	return (written > 0 && static_cast<size_t>(written) < json_len) ? 0 : -ENOSPC;
 }
@@ -506,6 +550,41 @@ int ParseSshJson(const char *json, SshConfig *config)
 	return 0;
 }
 
+int ParseNtpJson(const char *json, NtpConfig *config)
+{
+	if (json == nullptr || config == nullptr) {
+		return -EINVAL;
+	}
+
+	NtpConfig parsed = {};
+	FillNtpDefaults(&parsed);
+	const char *value = nullptr;
+
+	if (!FindJsonKey(json, "enabled", &value) || !ParseJsonBoolAt(value, &parsed.enabled)) {
+		return -EINVAL;
+	}
+
+	if (!FindJsonKey(json, "server", &value) ||
+	    !ParseJsonStringAt(value, parsed.server, sizeof(parsed.server)) ||
+	    parsed.server[0] == '\0') {
+		return -EINVAL;
+	}
+
+	if (!FindJsonKey(json, "port", &value) || !ParseJsonIntAt(value, &parsed.port) ||
+	    parsed.port < 1 || parsed.port > 65535) {
+		return -EINVAL;
+	}
+
+	if (!FindJsonKey(json, "sync_interval_hours", &value) ||
+	    !ParseJsonIntAt(value, &parsed.sync_interval_hours) ||
+	    parsed.sync_interval_hours < 1 || parsed.sync_interval_hours > 720) {
+		return -EINVAL;
+	}
+
+	*config = parsed;
+	return 0;
+}
+
 int MigrateLegacyFile(const char *legacy_path, const char *target_path)
 {
 	char current[1024];
@@ -570,6 +649,22 @@ int EnsureConfigFiles()
 		}
 	}
 
+	if (storage::ReadTextFile(kNtpConfigRelativePath, current, sizeof(current), &current_len) != 0) {
+		NtpConfig defaults = {};
+		char json[256];
+
+		FillNtpDefaults(&defaults);
+		int rc = BuildNtpJson(&defaults, json, sizeof(json));
+		if (rc != 0) {
+			return rc;
+		}
+
+		rc = storage::WriteTextFile(kNtpConfigRelativePath, json, strlen(json));
+		if (rc != 0) {
+			return rc;
+		}
+	}
+
 	return EnsureTextFile(kAuthorizedKeysRelativePath, kAuthorizedKeysTemplate);
 }
 
@@ -583,6 +678,18 @@ int SaveSshConfig(const SshConfig *config)
 	}
 
 	return storage::WriteTextFile(kSshConfigRelativePath, json, strlen(json));
+}
+
+int SaveNtpConfig(const NtpConfig *config)
+{
+	char json[256];
+	int rc = BuildNtpJson(config, json, sizeof(json));
+
+	if (rc != 0) {
+		return rc;
+	}
+
+	return storage::WriteTextFile(kNtpConfigRelativePath, json, strlen(json));
 }
 
 } // namespace
@@ -758,6 +865,55 @@ const char *GetSshConfigRelativePath()
 const char *GetAuthorizedKeysRelativePath()
 {
 	return kAuthorizedKeysRelativePath;
+}
+
+const char *GetNtpConfigRelativePath()
+{
+	return kNtpConfigRelativePath;
+}
+
+int LoadNtpConfig(NtpConfig *config)
+{
+	if (config == nullptr) {
+		return -EINVAL;
+	}
+
+	char json[256];
+	size_t json_len = 0U;
+	int rc = storage::ReadTextFile(kNtpConfigRelativePath, json, sizeof(json), &json_len);
+	if (rc != 0) {
+		return rc;
+	}
+
+	return ParseNtpJson(json, config);
+}
+
+int ReadNtpConfigJson(char *json, size_t json_len, size_t *out_len)
+{
+	return storage::ReadTextFile(kNtpConfigRelativePath, json, json_len, out_len);
+}
+
+int WriteNtpConfigJson(const char *json, size_t json_len)
+{
+	if (json == nullptr || json_len == 0U) {
+		return -EINVAL;
+	}
+
+	char buffer[256];
+	if (json_len >= sizeof(buffer)) {
+		return -ENOSPC;
+	}
+
+	memcpy(buffer, json, json_len);
+	buffer[json_len] = '\0';
+
+	NtpConfig config = {};
+	int rc = ParseNtpJson(buffer, &config);
+	if (rc != 0) {
+		return rc;
+	}
+
+	return SaveNtpConfig(&config);
 }
 
 int LoadFanState(size_t index, bool *enabled, uint8_t *percent)

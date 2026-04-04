@@ -8,6 +8,15 @@ version = "0.1.0"
 [tasks]
 walle_g_helloworld_c = "west build -b walle_g_fpga -d walle_g_build -p always zephyr/samples/hello_world"
 walle_g_helloworld = "west build -b walle_g_fpga -d walle_g_build zephyr/samples/hello_world"
+fan_controller_config = "cmd /c west build -p always -d build_fan_controller -b esp32s3_fan_controller/esp32s3/procpu app/fan_controller -- -DBOARD_ROOT=%PIXI_PROJECT_ROOT%"
+fan_controller_build = "cmd /c west build -d build_fan_controller -b esp32s3_fan_controller/esp32s3/procpu app/fan_controller -- -DBOARD_ROOT=%PIXI_PROJECT_ROOT%"
+fan_controller_clean = "west build -d build_fan_controller -t pristine"
+fan_controller_flash = "cmd /c \"if not defined FANCTL_PORT set FANCTL_PORT=COM9 && call esptool --chip esp32s3 --port %%FANCTL_PORT%% --baud 921600 --before default-reset --after hard-reset write-flash -u --flash-mode dio --flash-freq 80m --flash-size 16MB 0x0 build_fan_controller/zephyr/zephyr.bin\""
+fan_controller_erase = "cmd /c \"if not defined FANCTL_PORT set FANCTL_PORT=COM9 && call esptool --chip esp32s3 --port %%FANCTL_PORT%% --baud 921600 erase-flash\""
+fan_controller_deploy = { depends-on = ["fan_controller_build", "fan_controller_flash"] }
+fan_controller_deploy_clean = { depends-on = ["fan_controller_config", "fan_controller_flash"] }
+fan_controller_c = { depends-on = ["fan_controller_config"] }
+fan_controller = { depends-on = ["fan_controller_build"] }
 
 [dependencies]
 python = "==3.12"
@@ -70,5 +79,3 @@ esptool = ">=5.0.2"
 imgtool = ">=2.2.0"
 grpcio-tools = "==1.68.0"
 setuptools = ">=66.1.0"
-
-

@@ -32,6 +32,7 @@ private:
 	int ConnectToNetwork(const char *ssid, const char *psk);
 	int EnableDhcpServer();
 	int ReadStatus(struct wifi_iface_status *status);
+	void SyncTimeViaNtp();
 
 	struct net_if *ap_iface_;
 	struct net_if *sta_iface_;

@@ -8,8 +8,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <time.h>
+
+#include <zephyr/device.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/dhcpv4_server.h>
+#include <zephyr/net/sntp.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/wifi.h>
 #include <zephyr/sys/util.h>
@@ -109,6 +113,50 @@ void WifiManager::EventHandler(struct net_mgmt_event_callback *cb, uint64_t mgmt
 	}
 }
 
+void WifiManager::SyncTimeViaNtp()
+{
+	settings::NtpConfig ntp_config = {};
+	if (settings::LoadNtpConfig(&ntp_config) != 0) {
+		LOG_WRN("Failed to load NTP config");
+		return;
+	}
+
+	if (!ntp_config.enabled) {
+		LOG_DBG("NTP sync disabled");
+		return;
+	}
+
+	struct sntp_ctx ctx;
+	struct sockaddr_in addr = {};
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(ntp_config.port);
+
+	if (net_addr_pton(AF_INET, ntp_config.server, &addr.sin_addr) != 0) {
+		LOG_WRN("Invalid NTP server address: %s", ntp_config.server);
+		return;
+	}
+
+	int rc = sntp_init(&ctx, (struct sockaddr *)&addr, sizeof(addr));
+	if (rc < 0) {
+		LOG_WRN("SNTP init failed: %d", rc);
+		return;
+	}
+
+	struct sntp_time sntp_time = {};
+	rc = sntp_query(&ctx, 5000, &sntp_time);
+	sntp_close(&ctx);
+
+	if (rc < 0) {
+		LOG_WRN("SNTP query failed: %d", rc);
+		return;
+	}
+
+	// 转换为 Unix 时间戳 (SNTP 时间从 1900-01-01 开始，Unix 时间从 1970-01-01 开始)
+	time_t now = (time_t)(sntp_time.seconds - 2208988800U);
+
+	LOG_INF("Time synced via NTP: %lld", static_cast<long long>(now));
+}
+
 void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_event)
 {
 	k_mutex_lock(&mutex_, K_FOREVER);
@@ -116,7 +164,15 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 	switch (mgmt_event) {
 	case NET_EVENT_WIFI_CONNECT_RESULT: {
 		const struct wifi_status *status = static_cast<const struct wifi_status *>(cb->info);
+		bool was_connected = sta_connected_;
 		sta_connected_ = (status->status == 0);
+		// 如果刚刚连接成功，延迟触发 NTP 同步
+		if (sta_connected_ && !was_connected) {
+			k_mutex_unlock(&mutex_);
+			k_sleep(K_SECONDS(2));  // 等待 DHCP 完成
+			SyncTimeViaNtp();
+			k_mutex_lock(&mutex_, K_FOREVER);
+		}
 		break;
 	}
 	case NET_EVENT_WIFI_DISCONNECT_RESULT:

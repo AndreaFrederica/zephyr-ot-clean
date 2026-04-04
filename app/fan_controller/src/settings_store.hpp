@@ -33,6 +33,13 @@ struct SshConfig {
 	char authorized_keys_path[128];
 };
 
+struct NtpConfig {
+	bool enabled;
+	char server[64];
+	int port;
+	int sync_interval_hours;
+};
+
 int Init();
 void GetDefaultConfig(AppConfig *config);
 int LoadConfig(AppConfig *config);
@@ -42,6 +49,10 @@ int WriteConfigJson(const char *json, size_t json_len);
 int LoadSshConfig(SshConfig *config);
 int ReadSshConfigJson(char *json, size_t json_len, size_t *out_len);
 int WriteSshConfigJson(const char *json, size_t json_len);
+int LoadNtpConfig(NtpConfig *config);
+int ReadNtpConfigJson(char *json, size_t json_len, size_t *out_len);
+int WriteNtpConfigJson(const char *json, size_t json_len);
+const char *GetNtpConfigRelativePath();
 void SaveWifiCredentials(const char *ssid, const char *psk);
 void ClearWifiCredentials();
 int LoadWifiCredentials(char *ssid, size_t ssid_len, char *psk, size_t psk_len);

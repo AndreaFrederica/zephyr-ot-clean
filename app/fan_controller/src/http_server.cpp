@@ -12,6 +12,7 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/sys/reboot.h>
 
 #include "common.hpp"
 #include "curve_profiles.hpp"
@@ -567,6 +568,8 @@ void HttpServer::HandleClient(int client)
 			}
 		} else if (strcmp(requested, settings::GetSshConfigRelativePath()) == 0) {
 			rc = settings::WriteSshConfigJson(body, static_cast<size_t>(content_length));
+		} else if (strcmp(requested, settings::GetNtpConfigRelativePath()) == 0) {
+			rc = settings::WriteNtpConfigJson(body, static_cast<size_t>(content_length));
 		} else {
 			rc = storage::WriteTextFile(requested, body, static_cast<size_t>(content_length));
 		}
@@ -718,6 +721,45 @@ void HttpServer::HandleClient(int client)
 		}
 
 		(void)SendResponse(client, "200 OK", "application/json", "{\"ok\":true}");
+		return;
+	}
+
+	if (strcmp(method, "GET") == 0 && strcmp(path, "/api/ntp") == 0) {
+		size_t out_len = 0U;
+		int rc = settings::ReadNtpConfigJson(g_large_buffer, sizeof(g_large_buffer), &out_len);
+		if (rc != 0) {
+			(void)SendJsonResult(client, false, "ntp config read failed");
+			return;
+		}
+
+		(void)SendResponseSized(client, "200 OK", "application/json; charset=utf-8",
+					g_large_buffer, out_len);
+		return;
+	}
+
+	if (strcmp(method, "POST") == 0 && strcmp(path, "/api/ntp") == 0) {
+		int rc = settings::WriteNtpConfigJson(body, static_cast<size_t>(content_length));
+		if (rc != 0) {
+			(void)SendJsonResult(client, false, "ntp config save failed");
+			return;
+		}
+
+		size_t out_len = 0U;
+		rc = settings::ReadNtpConfigJson(g_large_buffer, sizeof(g_large_buffer), &out_len);
+		if (rc != 0) {
+			(void)SendJsonResult(client, false, "ntp config reload failed");
+			return;
+		}
+
+		(void)SendResponseSized(client, "200 OK", "application/json; charset=utf-8",
+					g_large_buffer, out_len);
+		return;
+	}
+
+	if (strcmp(method, "POST") == 0 && strcmp(path, "/api/reboot") == 0) {
+		(void)SendResponse(client, "200 OK", "application/json", "{\"ok\":true}");
+		k_sleep(K_MSEC(100));
+		sys_reboot(SYS_REBOOT_COLD);
 		return;
 	}
 

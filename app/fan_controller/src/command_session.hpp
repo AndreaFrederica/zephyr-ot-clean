@@ -30,6 +30,8 @@ public:
 	void BuildPrompt(char *buffer, size_t buffer_len) const;
 	int Execute(const char *command_line, SessionWriteFn writer, void *ctx,
 		    CommandSessionResult *result);
+	int Complete(const char *command_line, SessionWriteFn writer, void *ctx,
+		     char *completion, size_t completion_len);
 
 private:
 	void Emit(SessionWriteFn writer, void *ctx, const char *text) const;
