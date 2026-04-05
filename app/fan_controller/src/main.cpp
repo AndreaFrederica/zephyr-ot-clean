@@ -11,6 +11,7 @@
 #include "fan_controller.hpp"
 #include "host_control_manager.hpp"
 #include "http_server.hpp"
+#include "memory_domains.hpp"
 #include "settings_store.hpp"
 #include "core/service_context.hpp"
 #include "shell_commands.hpp"
@@ -37,6 +38,7 @@ void TelemetryThread(void *, void *, void *)
 	while (true) {
 		fanctl::WifiSnapshot snapshot = {};
 
+		g_wifi_manager.RefreshRuntimeStatus();
 		g_wifi_manager.GetSnapshot(&snapshot);
 		g_fan_controller.UpdateTelemetry(snapshot.sta_connected, snapshot.ap_enabled);
 		g_host_control.Tick();
@@ -81,6 +83,8 @@ int main()
 		LOG_ERR("host control init failed: %d", rc);
 		return rc;
 	}
+
+	fanctl::memory::Init();
 
 	rc = g_ssh_server.Init();
 	if (rc != 0) {

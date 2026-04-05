@@ -370,6 +370,11 @@ int CmdStorageSummary(const struct shell *sh, size_t argc, char **argv)
 	return cli::HandleStorageSummary(MakeIo(sh));
 }
 
+int CmdTop(const struct shell *sh, size_t argc, char **argv)
+{
+	return cli::HandleTop(g_runtime, argv, static_cast<int>(argc), MakeIo(sh));
+}
+
 int CmdScan(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
@@ -576,6 +581,8 @@ SHELL_CMD_ARG_REGISTER(rm, &dsub_paths, "rm <path>", CmdRm, 2, 0);
 SHELL_CMD_ARG_REGISTER(writefile, &dsub_paths, "writefile <path> <text>", CmdWriteFile, 3, 16);
 SHELL_CMD_ARG_REGISTER(wificonnect, NULL, "Wi-Fi connection utility: wificonnect [number] [password]",
 		       CmdWifiConnect, 1, 2);
+SHELL_CMD_ARG_REGISTER(top, NULL, "Live monitor: top [samples] [interval_ms]", CmdTop, 1, 2);
+SHELL_CMD_ARG_REGISTER(htop, NULL, "Live monitor alias: htop [samples] [interval_ms]", CmdTop, 1, 2);
 
 } // namespace
 

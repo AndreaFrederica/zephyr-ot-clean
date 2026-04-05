@@ -297,6 +297,7 @@ void EmitHelp(const Io &io)
 	     "  writefile <path> <text>\n"
 	     "  fanctl status|set|wifi|ap|config|clearwifi|factoryreset\n"
 	     "  show fans [1|2]|curves|system|wifi|storage|host|ntp|ssh|all\n"
+	     "  top [samples] [interval_ms]\n"
 	     "  edit open|status|show|set|ins|app|del|write|saveas|quit\n"
 	     "  whoami\n"
 	     "  hostname\n"
@@ -876,6 +877,50 @@ int HandleEdit(const Runtime &runtime, State &state, char *argv[], int argc, con
 
 	EmitLine(io, "edit: unknown subcommand");
 	return -EINVAL;
+}
+
+int HandleTop(const Runtime &runtime, char *argv[], int argc, const Io &io)
+{
+	long samples = 20;
+	long interval_ms = 1000;
+
+	if (argc > 1) {
+		samples = strtol(argv[1], nullptr, 10);
+		if (samples < 0) {
+			EmitLine(io, "usage: top [samples>=0] [interval_ms>=100]");
+			return -EINVAL;
+		}
+	}
+
+	if (argc > 2) {
+		interval_ms = strtol(argv[2], nullptr, 10);
+		if (interval_ms < 100) {
+			EmitLine(io, "usage: top [samples>=0] [interval_ms>=100]");
+			return -EINVAL;
+		}
+	}
+
+	for (long i = 0; samples == 0 || i < samples; ++i) {
+		Emit(io, "\033[2J\033[H");
+		show_status::WriteMonitor(io.line, io.ctx, *runtime.fan_controller, *runtime.wifi_manager,
+					  *runtime.host_control);
+
+		if (samples == 0) {
+			EmitLinef(io, "sample: %ld  interval: %ld ms  mode: continuous", i + 1,
+				  interval_ms);
+		} else {
+			EmitLinef(io, "sample: %ld/%ld  interval: %ld ms", i + 1, samples,
+				  interval_ms);
+		}
+
+		if (samples != 0 && i + 1 >= samples) {
+			break;
+		}
+
+		k_sleep(K_MSEC(interval_ms));
+	}
+
+	return 0;
 }
 
 int HandleStorageSummary(const Io &io)

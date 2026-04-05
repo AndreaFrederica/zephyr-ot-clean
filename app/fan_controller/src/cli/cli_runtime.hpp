@@ -59,6 +59,7 @@ int HandlePwd(const State &state, const Io &io);
 int HandleFanctl(const Runtime &runtime, State &state, char *argv[], int argc, const Io &io,
 		 CommandResult *result);
 int HandleShow(const Runtime &runtime, State &state, char *argv[], int argc, const Io &io);
+int HandleTop(const Runtime &runtime, char *argv[], int argc, const Io &io);
 int HandleEdit(const Runtime &runtime, State &state, char *argv[], int argc, const Io &io);
 int HandleStorageSummary(const Io &io);
 

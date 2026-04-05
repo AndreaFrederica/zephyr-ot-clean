@@ -58,10 +58,12 @@ bool TrySyncNtpAddress(const struct net_in_addr *addr, int port, struct sntp_tim
 
 WifiManager::WifiManager()
 	: ap_iface_(nullptr), sta_iface_(nullptr), ap_enabled_(false), sta_connected_(false),
-	  ap_clients_(0), scan_count_(0), scan_complete_(false), scan_status_(0)
+	  ap_clients_(0), cached_sta_rssi_(0), scan_count_(0), scan_complete_(false), scan_status_(0)
 {
 	ap_ssid_[0] = '\0';
 	saved_ssid_[0] = '\0';
+	(void)snprintf(cached_sta_state_, sizeof(cached_sta_state_), "%s", "INACTIVE");
+	cached_sta_ip_[0] = '\0';
 	memset(scan_results_, 0, sizeof(scan_results_));
 	k_sem_init(&scan_sem_, 0, 1);
 	k_work_init_delayable(&ntp_sync_work_, NtpSyncWorkHandler);
@@ -615,6 +617,8 @@ int WifiManager::Init()
 		// Connection result will be logged in HandleEvent
 	}
 
+	RefreshRuntimeStatus();
+
 	return 0;
 }
 
@@ -693,11 +697,43 @@ int WifiManager::ClearCredentials()
 	k_mutex_lock(&mutex_, K_FOREVER);
 	saved_ssid_[0] = '\0';
 	sta_connected_ = false;
+	cached_sta_rssi_ = 0;
+	cached_sta_ip_[0] = '\0';
+	(void)snprintf(cached_sta_state_, sizeof(cached_sta_state_), "%s", "INACTIVE");
 	k_mutex_unlock(&mutex_);
 	settings::ClearWifiCredentials();
 
 	(void)net_mgmt(NET_REQUEST_WIFI_DISCONNECT, sta_iface_, nullptr, 0);
 	return 0;
+}
+
+void WifiManager::RefreshRuntimeStatus()
+{
+	struct wifi_iface_status status = {};
+	int rc = ReadStatus(&status);
+
+	char ip[NET_IPV4_ADDR_LEN] = { 0 };
+	if (sta_iface_ != nullptr && sta_connected_) {
+		struct net_in_addr *ipv4 = net_if_ipv4_get_global_addr(sta_iface_, NET_ADDR_PREFERRED);
+		if (ipv4 != nullptr) {
+			(void)net_addr_ntop(AF_INET, ipv4, ip, sizeof(ip));
+		}
+	}
+
+	k_mutex_lock(&mutex_, K_FOREVER);
+	if (rc == 0) {
+		(void)snprintf(cached_sta_state_, sizeof(cached_sta_state_), "%s",
+			       wifi_state_txt(static_cast<enum wifi_iface_state>(status.state)));
+		cached_sta_rssi_ = status.rssi;
+	} else {
+		if (!sta_connected_) {
+			(void)snprintf(cached_sta_state_, sizeof(cached_sta_state_), "%s", "DISCONNECTED");
+			cached_sta_rssi_ = 0;
+		}
+	}
+
+	(void)snprintf(cached_sta_ip_, sizeof(cached_sta_ip_), "%s", ip);
+	k_mutex_unlock(&mutex_);
 }
 
 void WifiManager::GetSnapshot(WifiSnapshot *snapshot)
@@ -706,32 +742,16 @@ void WifiManager::GetSnapshot(WifiSnapshot *snapshot)
 		return;
 	}
 
-	struct wifi_iface_status status = {};
-	(void)ReadStatus(&status);
-
 	k_mutex_lock(&mutex_, K_FOREVER);
 	snapshot->ap_enabled = ap_enabled_;
 	snapshot->ap_clients = ap_clients_;
 	snapshot->sta_connected = sta_connected_;
 	(void)snprintf(snapshot->ap_ssid, sizeof(snapshot->ap_ssid), "%s", ap_ssid_);
 	(void)snprintf(snapshot->saved_ssid, sizeof(snapshot->saved_ssid), "%s", saved_ssid_);
+	(void)snprintf(snapshot->sta_state, sizeof(snapshot->sta_state), "%s", cached_sta_state_);
+	snapshot->sta_rssi = cached_sta_rssi_;
+	(void)snprintf(snapshot->sta_ip, sizeof(snapshot->sta_ip), "%s", cached_sta_ip_);
 	k_mutex_unlock(&mutex_);
-
-	(void)snprintf(snapshot->sta_state, sizeof(snapshot->sta_state), "%s",
-		       wifi_state_txt(static_cast<enum wifi_iface_state>(status.state)));
-	snapshot->sta_rssi = status.rssi;
-	
-	// Copy IPv4 address
-	if (sta_iface_ != nullptr && sta_connected_) {
-		struct net_in_addr *ipv4 = net_if_ipv4_get_global_addr(sta_iface_, NET_ADDR_PREFERRED);
-		if (ipv4 != nullptr) {
-			net_addr_ntop(AF_INET, ipv4, snapshot->sta_ip, sizeof(snapshot->sta_ip));
-		} else {
-			snapshot->sta_ip[0] = '\0';
-		}
-	} else {
-		snapshot->sta_ip[0] = '\0';
-	}
 }
 
 void WifiManager::HandleScanResult(struct wifi_scan_result *result)

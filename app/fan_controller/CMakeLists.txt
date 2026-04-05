@@ -68,6 +68,7 @@ add_custom_command(
 
 target_sources(app PRIVATE
   src/main.cpp
+  src/core/memory_domains.cpp
   src/cli/cli_runtime.cpp
   src/cli/shell_commands.cpp
   src/cli/line_editor.cpp

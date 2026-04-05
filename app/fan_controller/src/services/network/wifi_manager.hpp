@@ -27,6 +27,7 @@ public:
 	int SaveAndConnect(const char *ssid, const char *psk);
 	int ClearCredentials();
 	void GetSnapshot(WifiSnapshot *snapshot);
+	void RefreshRuntimeStatus();
 	
 	// Scan API
 	int StartScan();
@@ -59,6 +60,9 @@ private:
 	int ap_clients_;
 	char ap_ssid_[WIFI_SSID_MAX_LEN + 1];
 	char saved_ssid_[WIFI_SSID_MAX_LEN + 1];
+	char cached_sta_state_[24];
+	char cached_sta_ip_[NET_IPV4_ADDR_LEN];
+	int cached_sta_rssi_;
 	
 	// Scan state
 	WifiScanResult scan_results_[16];

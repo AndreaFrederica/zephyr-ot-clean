@@ -16,6 +16,8 @@
 #include <zephyr/sys/mem_stats.h>
 
 #include "core/common.hpp"
+#include "memory_domains.hpp"
+#include "http_common.hpp"
 #include "curve_profiles.hpp"
 #include "fan_controller.hpp"
 #include "host_control_manager.hpp"
@@ -81,6 +83,8 @@ inline void FormatDuration(int64_t uptime_ms, char *buffer, size_t buffer_len)
 struct ThreadSummary {
 	size_t total;
 	size_t named;
+	size_t stack_bytes;
+	size_t stack_used_bytes;
 };
 
 inline void CountThreadCallback(const struct k_thread *thread, void *user_data)
@@ -95,6 +99,99 @@ inline void CountThreadCallback(const struct k_thread *thread, void *user_data)
 	if (name != nullptr && name[0] != '\0') {
 		++summary->named;
 	}
+
+#if defined(CONFIG_THREAD_STACK_INFO) && defined(CONFIG_INIT_STACKS)
+	size_t unused = 0U;
+	if (k_thread_stack_space_get(thread, &unused) == 0) {
+		size_t stack_size = thread->stack_info.size;
+		summary->stack_bytes += stack_size;
+		summary->stack_used_bytes += stack_size >= unused ? (stack_size - unused) : stack_size;
+	}
+#endif
+}
+
+inline void EmitHeapStats(EmitLineFn emit, void *ctx, const char *label,
+			  const memory::HeapSnapshot &heap)
+{
+	if (!heap.available) {
+		EmitLinef(emit, ctx, "  %-18s : unavailable", label);
+		return;
+	}
+
+	char capacity_text[24];
+	char free_text[24];
+	char used_text[24];
+	char peak_text[24];
+	FormatBytes(heap.capacity_bytes, capacity_text, sizeof(capacity_text));
+	FormatBytes(heap.free_bytes, free_text, sizeof(free_text));
+	FormatBytes(heap.allocated_bytes, used_text, sizeof(used_text));
+	FormatBytes(heap.peak_allocated_bytes, peak_text, sizeof(peak_text));
+
+	EmitLinef(emit, ctx, "  %s capacity : %s", label, capacity_text);
+	EmitLinef(emit, ctx, "  %s free     : %s", label, free_text);
+	EmitLinef(emit, ctx, "  %s alloc    : %s", label, used_text);
+	EmitLinef(emit, ctx, "  %s peak     : %s", label, peak_text);
+}
+
+struct ThreadEmitContext {
+	EmitLineFn emit;
+	void *ctx;
+	uint64_t total_cycles;
+};
+
+inline unsigned int RuntimePercent(uint64_t part, uint64_t total)
+{
+	if (total == 0U) {
+		return 0U;
+	}
+
+	return static_cast<unsigned int>((part * 100U) / total);
+}
+
+inline void EmitThreadDetailCallback(const struct k_thread *thread, void *user_data)
+{
+	auto *detail_ctx = static_cast<ThreadEmitContext *>(user_data);
+	if (detail_ctx == nullptr || detail_ctx->emit == nullptr) {
+		return;
+	}
+
+	const char *name = k_thread_name_get(const_cast<k_thread *>(thread));
+	if (name == nullptr || name[0] == '\0') {
+		name = "<unnamed>";
+	}
+
+	char state_text[32];
+	const char *state = k_thread_state_str(const_cast<k_thread *>(thread), state_text,
+					       sizeof(state_text));
+	int priority = k_thread_priority_get(const_cast<k_thread *>(thread));
+	unsigned int cpu_percent = 0U;
+
+#if defined(CONFIG_THREAD_RUNTIME_STATS)
+	k_thread_runtime_stats_t thread_stats = {};
+	if (k_thread_runtime_stats_get(const_cast<k_thread *>(thread), &thread_stats) == 0) {
+		cpu_percent = RuntimePercent(thread_stats.execution_cycles, detail_ctx->total_cycles);
+	}
+#endif
+
+#if defined(CONFIG_THREAD_STACK_INFO) && defined(CONFIG_INIT_STACKS)
+	size_t stack_size = thread->stack_info.size;
+	size_t unused = 0U;
+	if (k_thread_stack_space_get(thread, &unused) != 0) {
+		unused = 0U;
+	}
+	size_t used = stack_size >= unused ? (stack_size - unused) : stack_size;
+	unsigned int used_percent = stack_size > 0U
+					    ? static_cast<unsigned int>((used * 100U) / stack_size)
+					    : 0U;
+	EmitLinef(detail_ctx->emit, detail_ctx->ctx,
+		  "  %-18s p=%3d cpu=%3u%% %-11s stack=%5u/%5u B (%3u%%)",
+		  name, priority, cpu_percent, state != nullptr ? state : "-",
+		  static_cast<unsigned int>(used),
+		  static_cast<unsigned int>(stack_size), used_percent);
+#else
+	EmitLinef(detail_ctx->emit, detail_ctx->ctx, "  %-18s p=%3d cpu=%3u%% %s",
+		  name, priority, cpu_percent, state != nullptr ? state : "-");
+#endif
 }
 
 inline void EmitFan(EmitLineFn emit, void *ctx, size_t index, const FanState &fan)
@@ -149,25 +246,79 @@ inline void WriteSystem(EmitLineFn emit, void *ctx)
 	detail::EmitLinef(emit, ctx, "  threads            : %u total, %u named",
 			  static_cast<unsigned int>(threads.total),
 			  static_cast<unsigned int>(threads.named));
+#if defined(CONFIG_THREAD_RUNTIME_STATS)
+	k_thread_runtime_stats_t runtime_all = {};
+	bool runtime_all_ok = (k_thread_runtime_stats_all_get(&runtime_all) == 0);
+#endif
+#if defined(CONFIG_THREAD_STACK_INFO) && defined(CONFIG_INIT_STACKS)
+	char stack_total_text[24];
+	char stack_used_text[24];
+	detail::FormatBytes(threads.stack_bytes, stack_total_text, sizeof(stack_total_text));
+	detail::FormatBytes(threads.stack_used_bytes, stack_used_text, sizeof(stack_used_text));
+	detail::EmitLinef(emit, ctx, "  stack usage        : %s used / %s reserved",
+			  stack_used_text, stack_total_text);
+#endif
 
+#if defined(CONFIG_THREAD_RUNTIME_STATS)
+	if (runtime_all_ok) {
+		unsigned int busy_percent =
+			detail::RuntimePercent(runtime_all.total_cycles, runtime_all.execution_cycles);
+		unsigned int idle_percent =
+			detail::RuntimePercent(runtime_all.idle_cycles, runtime_all.execution_cycles);
+		detail::EmitLinef(emit, ctx, "  cpu usage          : busy %u%%  idle %u%%",
+				  busy_percent, idle_percent);
+	}
+#endif
+
+	detail::EmitLinef(emit, ctx, "Memory");
 #if defined(CONFIG_SYS_HEAP_RUNTIME_STATS)
 	struct sys_memory_stats heap_stats = {};
 	if (malloc_runtime_stats_get(&heap_stats) == 0) {
-		char free_text[24];
-		char used_text[24];
-		char peak_text[24];
-		detail::FormatBytes(heap_stats.free_bytes, free_text, sizeof(free_text));
-		detail::FormatBytes(heap_stats.allocated_bytes, used_text, sizeof(used_text));
-		detail::FormatBytes(heap_stats.max_allocated_bytes, peak_text, sizeof(peak_text));
-			detail::EmitLinef(emit, ctx, "  heap free          : %s", free_text);
-			detail::EmitLinef(emit, ctx, "  heap allocated     : %s", used_text);
-			detail::EmitLinef(emit, ctx, "  heap peak          : %s", peak_text);
+		memory::HeapSnapshot libc_heap = {};
+		libc_heap.available = true;
+		libc_heap.capacity_bytes = heap_stats.free_bytes + heap_stats.allocated_bytes;
+		libc_heap.free_bytes = heap_stats.free_bytes;
+		libc_heap.allocated_bytes = heap_stats.allocated_bytes;
+		libc_heap.peak_allocated_bytes = heap_stats.max_allocated_bytes;
+		detail::EmitHeapStats(emit, ctx, "libc heap", libc_heap);
 	} else {
-		detail::EmitLinef(emit, ctx, "  heap stats         : unavailable");
+		detail::EmitLinef(emit, ctx, "  libc heap          : unavailable");
 	}
 #else
-	detail::EmitLinef(emit, ctx, "  heap stats         : disabled");
+	detail::EmitLinef(emit, ctx, "  libc heap          : disabled");
 #endif
+
+	memory::HeapSnapshot http_heap = {};
+	if (memory::GetHttpHeapSnapshot(&http_heap)) {
+		detail::EmitHeapStats(emit, ctx, "http psram", http_heap);
+	} else {
+		detail::EmitLinef(emit, ctx, "  http psram         : unavailable");
+	}
+
+	char recv_text[24];
+	char scratch_text[24];
+	char slot_total_text[24];
+	char pool_total_text[24];
+	detail::FormatBytes(http::kRecvBufferSize, recv_text, sizeof(recv_text));
+	detail::FormatBytes(http::kLargeBufferSize, scratch_text, sizeof(scratch_text));
+	detail::FormatBytes(http::kRecvBufferSize + http::kLargeBufferSize,
+			    slot_total_text, sizeof(slot_total_text));
+	detail::FormatBytes((http::kRecvBufferSize + http::kLargeBufferSize) * http::kWorkerCount,
+			    pool_total_text, sizeof(pool_total_text));
+	detail::EmitLinef(emit, ctx, "  http workers       : %u", static_cast<unsigned int>(http::kWorkerCount));
+	detail::EmitLinef(emit, ctx, "  http recv buffer   : %s per worker", recv_text);
+	detail::EmitLinef(emit, ctx, "  http scratch       : %s per worker", scratch_text);
+	detail::EmitLinef(emit, ctx, "  http worker total  : %s", slot_total_text);
+	detail::EmitLinef(emit, ctx, "  http pool total    : %s", pool_total_text);
+
+	detail::EmitLinef(emit, ctx, "Threads");
+	detail::ThreadEmitContext thread_ctx = { emit, ctx, 0U };
+#if defined(CONFIG_THREAD_RUNTIME_STATS)
+	if (runtime_all_ok) {
+		thread_ctx.total_cycles = runtime_all.execution_cycles;
+	}
+#endif
+	k_thread_foreach(detail::EmitThreadDetailCallback, &thread_ctx);
 }
 
 inline void WriteWifi(EmitLineFn emit, void *ctx, WifiManager &wifi_manager)
@@ -360,6 +511,79 @@ inline void WriteAll(EmitLineFn emit, void *ctx, FanController &fan_controller,
 	(void)WriteFans(emit, ctx, fan_controller, 0);
 	emit(ctx, "");
 	WriteCurves(emit, ctx);
+}
+
+inline void WriteMonitor(EmitLineFn emit, void *ctx, FanController &fan_controller,
+			 WifiManager &wifi_manager, HostControlManager &host_control)
+{
+	ARG_UNUSED(host_control);
+
+	WifiSnapshot wifi = {};
+	wifi_manager.GetSnapshot(&wifi);
+
+	FanState fans[kFanCount];
+	fan_controller.GetAllStates(fans);
+
+	char uptime_text[32];
+	detail::FormatDuration(k_uptime_get(), uptime_text, sizeof(uptime_text));
+
+	detail::EmitLinef(emit, ctx, "fanctl top  uptime=%s", uptime_text);
+	detail::EmitLinef(emit, ctx, "wifi  ap=%s sta=%s ip=%s rssi=%d",
+			  wifi.ap_enabled ? "on" : "off",
+			  wifi.sta_connected ? "connected" : wifi.sta_state,
+			  wifi.sta_ip[0] != '\0' ? wifi.sta_ip : "-",
+			  wifi.sta_rssi);
+
+#if defined(CONFIG_THREAD_RUNTIME_STATS)
+	k_thread_runtime_stats_t runtime_all = {};
+	if (k_thread_runtime_stats_all_get(&runtime_all) == 0) {
+		unsigned int busy_percent =
+			detail::RuntimePercent(runtime_all.total_cycles, runtime_all.execution_cycles);
+		unsigned int idle_percent =
+			detail::RuntimePercent(runtime_all.idle_cycles, runtime_all.execution_cycles);
+		detail::EmitLinef(emit, ctx, "cpu   busy=%u%% idle=%u%%", busy_percent, idle_percent);
+	}
+#endif
+
+#if defined(CONFIG_SYS_HEAP_RUNTIME_STATS)
+	struct sys_memory_stats heap_stats = {};
+	if (malloc_runtime_stats_get(&heap_stats) == 0) {
+		char free_text[24];
+		char used_text[24];
+		detail::FormatBytes(heap_stats.free_bytes, free_text, sizeof(free_text));
+		detail::FormatBytes(heap_stats.allocated_bytes, used_text, sizeof(used_text));
+		detail::EmitLinef(emit, ctx, "heap  libc used=%s free=%s", used_text, free_text);
+	}
+#endif
+
+	memory::HeapSnapshot http_heap = {};
+	if (memory::GetHttpHeapSnapshot(&http_heap) && http_heap.available) {
+		char free_text[24];
+		char used_text[24];
+		detail::FormatBytes(http_heap.free_bytes, free_text, sizeof(free_text));
+		detail::FormatBytes(http_heap.allocated_bytes, used_text, sizeof(used_text));
+		detail::EmitLinef(emit, ctx, "heap  http used=%s free=%s", used_text, free_text);
+	}
+
+	for (size_t i = 0U; i < kFanCount; ++i) {
+		detail::EmitLinef(emit, ctx,
+				  "fan%u  enabled=%s effective=%u%% pwm=%u%% rpm=%d adc=%d mV",
+				  static_cast<unsigned int>(i + 1U),
+				  fans[i].enabled ? "true" : "false",
+				  fans[i].effective_percent,
+				  fans[i].pwm_percent,
+				  fans[i].actual_rpm,
+				  fans[i].mapped_voltage_mv);
+	}
+
+	detail::EmitLinef(emit, ctx, "threads");
+	detail::ThreadEmitContext thread_ctx = { emit, ctx, 0U };
+#if defined(CONFIG_THREAD_RUNTIME_STATS)
+	if (k_thread_runtime_stats_all_get(&runtime_all) == 0) {
+		thread_ctx.total_cycles = runtime_all.execution_cycles;
+	}
+#endif
+	k_thread_foreach(detail::EmitThreadDetailCallback, &thread_ctx);
 }
 
 } // namespace fanctl::show_status

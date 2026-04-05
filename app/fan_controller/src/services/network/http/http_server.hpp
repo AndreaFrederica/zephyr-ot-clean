@@ -8,6 +8,7 @@
 #include <zephyr/kernel.h>
 
 #include "core/service_context.hpp"
+#include "http_common.hpp"
 
 namespace fanctl {
 
@@ -22,14 +23,17 @@ public:
 	void Start();
 
 private:
-	static void ThreadEntry(void *ctx, void *unused1, void *unused2);
+	static void ListenerThreadEntry(void *ctx, void *unused1, void *unused2);
+	static void WorkerThreadEntry(void *ctx, void *worker_index_ptr, void *unused2);
 	void Run();
+	void WorkerLoop(size_t worker_index);
 	void HandleClient(int client);
 
 	FanController &fan_controller_;
 	WifiManager &wifi_manager_;
 	HostControlManager &host_control_;
-	struct k_thread thread_;
+	struct k_thread listener_thread_;
+	struct k_thread worker_threads_[http::kWorkerCount];
 };
 
 } // namespace fanctl

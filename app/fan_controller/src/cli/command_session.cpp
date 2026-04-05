@@ -378,6 +378,11 @@ int CommandSession::Execute(const char *command_line, SessionWriteFn writer, voi
 		return HandleEdit(argv, argc, writer, ctx);
 	}
 
+	if (strcmp(argv[0], "top") == 0 || strcmp(argv[0], "htop") == 0) {
+		SessionEmitContext emit = { writer, ctx };
+		return cli::HandleTop(services_, argv, argc, MakeIo(&emit));
+	}
+
 	if (strcmp(argv[0], "whoami") == 0) {
 		Emit(writer, ctx, "root\r\n");
 		return 0;
@@ -438,7 +443,7 @@ namespace {
 const char *kTopLevelCommands[] = {
 	"help", "pwd", "cd", "ls", "cat", "cf", "duf", "touch", "mkdir", "rm",
 	"writefile", "fanctl", "show", "edit", "whoami", "hostname",
-	"uname", "echo", "clear", "exit", "reboot", nullptr
+	"uname", "echo", "clear", "top", "htop", "exit", "reboot", nullptr
 };
 
 const char *kFanctlSubcommands[] = {

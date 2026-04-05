@@ -9,10 +9,14 @@
 
 namespace fanctl::http {
 
-constexpr size_t kRecvBufferSize = 4096;
-constexpr size_t kLargeBufferSize = 4096;
+constexpr size_t kMaxRequestBodySize = 129U * 1024U;
+constexpr size_t kRecvBufferHeadroom = 3U * 1024U;
+constexpr size_t kRecvBufferSize = kMaxRequestBodySize + kRecvBufferHeadroom;
+constexpr size_t kLargeBufferSize = 65536;
 constexpr size_t kStatusBufferSize = 2048;
-constexpr int kHttpBacklog = 4;
+constexpr size_t kWorkerCount = 4;
+constexpr size_t kClientQueueDepth = 8;
+constexpr int kHttpBacklog = 8;
 
 struct Request {
 	char method[8];

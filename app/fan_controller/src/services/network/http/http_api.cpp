@@ -133,49 +133,48 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 		WifiSnapshot wifi = {};
 		char ap_ssid[WIFI_SSID_MAX_LEN * 2U + 1U];
 		char sta_ssid[WIFI_SSID_MAX_LEN * 2U + 1U];
-		char response[kStatusBufferSize];
 
 		fan_controller.GetAllStates(fans);
 		wifi_manager.GetSnapshot(&wifi);
 		JsonEscape(ap_ssid, sizeof(ap_ssid), wifi.ap_ssid);
 		JsonEscape(sta_ssid, sizeof(sta_ssid), wifi.saved_ssid);
 
-		(void)snprintf(response, sizeof(response),
-			       "{\"ap\":{\"enabled\":%s,\"ssid\":\"%s\",\"psk\":\"%s\",\"ip\":\"%s\",\"clients\":%d},"
-			       "\"sta\":{\"connected\":%s,\"ssid\":\"%s\",\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d},"
-			       "\"fans\":[{\"id\":1,\"enabled\":%s,\"use_adc_target\":%s,"
-			       "\"percent\":%u,\"effective_percent\":%u,\"pwm_percent\":%u,"
-			       "\"adc_target_percent\":%u,\"actual_percent\":%u,\"adc_raw\":%d,"
-			       "\"adc_mv\":%d,\"mapped_voltage_mv\":%d,\"actual_rpm\":%d,"
-			       "\"target_rpm\":%d,\"pwm_pulse_ns\":%u},"
-			       "{\"id\":2,\"enabled\":%s,\"use_adc_target\":%s,"
-			       "\"percent\":%u,\"effective_percent\":%u,\"pwm_percent\":%u,"
-			       "\"adc_target_percent\":%u,\"actual_percent\":%u,\"adc_raw\":%d,"
-			       "\"adc_mv\":%d,\"mapped_voltage_mv\":%d,\"actual_rpm\":%d,"
-			       "\"target_rpm\":%d,\"pwm_pulse_ns\":%u}],"
-			       "\"curves\":{\"adc_to_voltage\":\"%s\",\"voltage_to_percent\":\"%s\","
-			       "\"percent_to_pwm\":\"%s\",\"percent_to_rpm\":\"%s\"}}",
-			       wifi.ap_enabled ? "true" : "false", ap_ssid, kApPsk, kApIpAddr,
-			       wifi.ap_clients, wifi.sta_connected ? "true" : "false", sta_ssid,
-			       wifi.sta_state, wifi.sta_ip, wifi.sta_rssi,
-			       fans[0].enabled ? "true" : "false",
-			       fans[0].use_adc_target ? "true" : "false", fans[0].percent,
-			       fans[0].effective_percent, fans[0].pwm_percent,
-			       fans[0].adc_target_percent, fans[0].actual_percent, fans[0].adc_raw,
-			       fans[0].adc_mv, fans[0].mapped_voltage_mv, fans[0].actual_rpm,
-			       fans[0].target_rpm, static_cast<unsigned int>(fans[0].pwm_pulse_ns),
-			       fans[1].enabled ? "true" : "false",
-			       fans[1].use_adc_target ? "true" : "false", fans[1].percent,
-			       fans[1].effective_percent, fans[1].pwm_percent,
-			       fans[1].adc_target_percent, fans[1].actual_percent, fans[1].adc_raw,
-			       fans[1].adc_mv, fans[1].mapped_voltage_mv, fans[1].actual_rpm,
-			       fans[1].target_rpm, static_cast<unsigned int>(fans[1].pwm_pulse_ns),
-			       curves::CurveProfiles::GetAdcToVoltagePath(),
-			       curves::CurveProfiles::GetVoltageToPercentPath(),
-			       curves::CurveProfiles::GetPercentToPwmPath(),
-			       curves::CurveProfiles::GetPercentToRpmPath());
+		int written = snprintf(scratch, scratch_len,
+				       "{\"ap\":{\"enabled\":%s,\"ssid\":\"%s\",\"psk\":\"%s\",\"ip\":\"%s\",\"clients\":%d},"
+				       "\"sta\":{\"connected\":%s,\"ssid\":\"%s\",\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d},"
+				       "\"fans\":[{\"id\":1,\"enabled\":%s,\"use_adc_target\":%s,"
+				       "\"percent\":%u,\"effective_percent\":%u,\"pwm_percent\":%u,"
+				       "\"adc_target_percent\":%u,\"actual_percent\":%u,\"adc_raw\":%d,"
+				       "\"adc_mv\":%d,\"mapped_voltage_mv\":%d,\"actual_rpm\":%d,"
+				       "\"target_rpm\":%d,\"pwm_pulse_ns\":%u},"
+				       "{\"id\":2,\"enabled\":%s,\"use_adc_target\":%s,"
+				       "\"percent\":%u,\"effective_percent\":%u,\"pwm_percent\":%u,"
+				       "\"adc_target_percent\":%u,\"actual_percent\":%u,\"adc_raw\":%d,"
+				       "\"adc_mv\":%d,\"mapped_voltage_mv\":%d,\"actual_rpm\":%d,"
+				       "\"target_rpm\":%d,\"pwm_pulse_ns\":%u}]}",
+				       wifi.ap_enabled ? "true" : "false", ap_ssid, kApPsk, kApIpAddr,
+				       wifi.ap_clients, wifi.sta_connected ? "true" : "false", sta_ssid,
+				       wifi.sta_state, wifi.sta_ip, wifi.sta_rssi,
+				       fans[0].enabled ? "true" : "false",
+				       fans[0].use_adc_target ? "true" : "false", fans[0].percent,
+				       fans[0].effective_percent, fans[0].pwm_percent,
+				       fans[0].adc_target_percent, fans[0].actual_percent, fans[0].adc_raw,
+				       fans[0].adc_mv, fans[0].mapped_voltage_mv, fans[0].actual_rpm,
+				       fans[0].target_rpm, static_cast<unsigned int>(fans[0].pwm_pulse_ns),
+				       fans[1].enabled ? "true" : "false",
+				       fans[1].use_adc_target ? "true" : "false", fans[1].percent,
+				       fans[1].effective_percent, fans[1].pwm_percent,
+				       fans[1].adc_target_percent, fans[1].actual_percent, fans[1].adc_raw,
+				       fans[1].adc_mv, fans[1].mapped_voltage_mv, fans[1].actual_rpm,
+				       fans[1].target_rpm, static_cast<unsigned int>(fans[1].pwm_pulse_ns));
 
-		(void)SendResponse(client, "200 OK", "application/json", response);
+		if (written <= 0 || static_cast<size_t>(written) >= scratch_len) {
+			(void)SendJsonResult(client, false, "status response too large");
+			return true;
+		}
+
+		(void)SendResponseSized(client, "200 OK", "application/json", scratch,
+					static_cast<size_t>(written));
 		return true;
 	}
 
@@ -479,10 +478,13 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 		size_t count = 0;
 		wifi_manager.GetScanResults(results, ARRAY_SIZE(results), &count);
 
-		char json[2048];
-		int pos = snprintf(json, sizeof(json), "{\"ok\":true,\"networks\":[");
+		int pos = snprintf(scratch, scratch_len, "{\"ok\":true,\"networks\":[");
+		if (pos <= 0 || static_cast<size_t>(pos) >= scratch_len) {
+			(void)SendJsonResult(client, false, "scan response too large");
+			return true;
+		}
 
-		for (size_t i = 0; i < count && pos < static_cast<int>(sizeof(json)) - 256; ++i) {
+		for (size_t i = 0; i < count && pos < static_cast<int>(scratch_len) - 256; ++i) {
 			const char *security = "unknown";
 			switch (results[i].security) {
 			case WIFI_SECURITY_TYPE_NONE: security = "open"; break;
@@ -492,19 +494,25 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 			default: break;
 			}
 
-			int written = snprintf(json + pos, sizeof(json) - pos,
+			int written = snprintf(scratch + pos, scratch_len - static_cast<size_t>(pos),
 					       "%s{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%u,\"security\":\"%s\"}",
 					       (i > 0) ? "," : "", results[i].ssid, results[i].rssi,
 					       results[i].channel, security);
-			if (written < 0 || written >= static_cast<int>(sizeof(json)) - pos) {
+			if (written < 0 || written >= static_cast<int>(scratch_len) - pos) {
 				// 缓冲区已满，停止添加更多网络
 				break;
 			}
 			pos += written;
 		}
 
-		(void)snprintf(json + pos, sizeof(json) - pos, "]}");
-		(void)SendResponse(client, "200 OK", "application/json", json);
+		int tail = snprintf(scratch + pos, scratch_len - static_cast<size_t>(pos), "]}");
+		if (tail <= 0 || tail >= static_cast<int>(scratch_len) - pos) {
+			(void)SendJsonResult(client, false, "scan response too large");
+			return true;
+		}
+
+		(void)SendResponseSized(client, "200 OK", "application/json", scratch,
+					static_cast<size_t>(pos + tail));
 		return true;
 	}
 

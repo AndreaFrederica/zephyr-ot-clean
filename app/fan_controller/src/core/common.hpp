@@ -14,7 +14,8 @@ namespace fanctl {
 
 constexpr size_t kFanCount = 2;
 constexpr int kHttpPort = 80;
-constexpr int kHttpStackSize = 16384;
+constexpr int kHttpAcceptStackSize = 4096;
+constexpr int kHttpWorkerStackSize = 6144;
 constexpr int kSshStackSize = 24576;
 constexpr int kTelemetryStackSize = 4096;
 constexpr const char *kApIpAddr = "192.168.4.1";
