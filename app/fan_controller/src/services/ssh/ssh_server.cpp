@@ -50,6 +50,60 @@ struct ConnectionContext {
 	char exec_command[256];
 };
 
+const char *AuthTypeName(byte auth_type)
+{
+	switch (auth_type) {
+	case WOLFSSH_USERAUTH_PASSWORD:
+		return "password";
+	case WOLFSSH_USERAUTH_PUBLICKEY:
+		return "publickey";
+	default:
+		return "unknown";
+	}
+}
+
+bool HostKeyHasPublicPart(const char *pem, size_t pem_len)
+{
+	if (pem == nullptr || pem_len == 0U) {
+		return false;
+	}
+
+	word32 der_len = static_cast<word32>(pem_len * 2U);
+	byte *der = static_cast<byte *>(malloc(der_len));
+	if (der == nullptr) {
+		return false;
+	}
+
+	int rc = wc_KeyPemToDer(reinterpret_cast<const byte *>(pem), static_cast<word32>(pem_len),
+				       der, der_len, nullptr);
+	if (rc <= 0) {
+		free(der);
+		return false;
+	}
+
+	ecc_key key;
+	rc = wc_ecc_init(&key);
+	if (rc != 0) {
+		free(der);
+		return false;
+	}
+
+	word32 idx = 0U;
+	rc = wc_EccPrivateKeyDecode(der, &idx, &key, static_cast<word32>(rc));
+	free(der);
+	if (rc != 0) {
+		wc_ecc_free(&key);
+		return false;
+	}
+
+	byte public_key[65];
+	word32 public_key_len = sizeof(public_key);
+	rc = wc_ecc_export_x963(&key, public_key, &public_key_len);
+	wc_ecc_free(&key);
+
+	return rc == 0;
+}
+
 int SendStreamAll(WOLFSSH *ssh, const char *data, size_t len)
 {
 	size_t offset = 0U;
@@ -210,12 +264,16 @@ int UserAuthCallback(byte auth_type, WS_UserAuthData *auth_data, void *ctx)
 	memcpy(username, auth_data->username, username_len);
 	username[username_len] = '\0';
 
+	LOG_INF("ssh auth attempt: user=%s type=%s", username, AuthTypeName(auth_type));
+
 	if (strcmp(username, config.username) != 0) {
+		LOG_WRN("ssh auth rejected: invalid user '%s'", username);
 		return WOLFSSH_USERAUTH_INVALID_USER;
 	}
 
 	if (auth_type == WOLFSSH_USERAUTH_PASSWORD) {
 		if (!config.allow_password_auth) {
+			LOG_WRN("ssh auth rejected: password auth disabled");
 			return WOLFSSH_USERAUTH_REJECTED;
 		}
 
@@ -224,21 +282,30 @@ int UserAuthCallback(byte auth_type, WS_UserAuthData *auth_data, void *ctx)
 			MIN(static_cast<size_t>(auth_data->sf.password.passwordSz), sizeof(password) - 1U);
 		memcpy(password, auth_data->sf.password.password, password_len);
 		password[password_len] = '\0';
-		return strcmp(password, config.password) == 0 ? WOLFSSH_USERAUTH_SUCCESS
-							      : WOLFSSH_USERAUTH_INVALID_PASSWORD;
+		if (strcmp(password, config.password) == 0) {
+			LOG_INF("ssh auth success: password");
+			return WOLFSSH_USERAUTH_SUCCESS;
+		}
+		LOG_WRN("ssh auth rejected: invalid password");
+		return WOLFSSH_USERAUTH_INVALID_PASSWORD;
 	}
 
 	if (auth_type == WOLFSSH_USERAUTH_PUBLICKEY) {
 		if (!config.allow_public_key_auth) {
+			LOG_WRN("ssh auth rejected: public key auth disabled");
 			return WOLFSSH_USERAUTH_REJECTED;
 		}
 
-		return AuthorizedKeyMatches(config, auth_data->sf.publicKey.publicKey,
-					    auth_data->sf.publicKey.publicKeySz)
-			       ? WOLFSSH_USERAUTH_SUCCESS
-			       : WOLFSSH_USERAUTH_INVALID_PUBLICKEY;
+		if (AuthorizedKeyMatches(config, auth_data->sf.publicKey.publicKey,
+					 auth_data->sf.publicKey.publicKeySz)) {
+			LOG_INF("ssh auth success: public key");
+			return WOLFSSH_USERAUTH_SUCCESS;
+		}
+		LOG_WRN("ssh auth rejected: public key not authorized");
+		return WOLFSSH_USERAUTH_INVALID_PUBLICKEY;
 	}
 
+	LOG_WRN("ssh auth rejected: unsupported auth type=%u", auth_type);
 	return WOLFSSH_USERAUTH_INVALID_AUTHTYPE;
 }
 
@@ -301,7 +368,11 @@ int SshServer::EnsureHostKey()
 	size_t existing_len = 0U;
 	if (storage::ReadTextFile(config_.host_key_path, existing, sizeof(existing), &existing_len) == 0 &&
 	    existing_len > 0U) {
-		return 0;
+		if (HostKeyHasPublicPart(existing, existing_len)) {
+			return 0;
+		}
+
+		LOG_WRN("ssh host key missing public part, regenerating: %s", config_.host_key_path);
 	}
 
 	WC_RNG rng;
@@ -331,7 +402,7 @@ int SshServer::EnsureHostKey()
 		return -EIO;
 	}
 
-	int der_len = wc_EccPrivateKeyToDer(&key, nullptr, 0);
+	int der_len = wc_EccKeyDerSize(&key, 1);
 	if (der_len <= 0) {
 		wc_ecc_free(&key);
 		wc_FreeRng(&rng);
@@ -346,7 +417,7 @@ int SshServer::EnsureHostKey()
 		return -ENOMEM;
 	}
 
-	rc = wc_EccPrivateKeyToDer(&key, der, static_cast<word32>(der_len));
+	rc = wc_EccKeyToDer(&key, der, static_cast<word32>(der_len));
 
 	wc_ecc_free(&key);
 	wc_FreeRng(&rng);
@@ -613,7 +684,10 @@ int SshServer::HandleClient(int client)
 
 	int rc = wolfSSH_accept(ssh);
 	if (rc != WS_SUCCESS) {
-		LOG_WRN("ssh accept failed: %d (%s)", rc, wolfSSH_ErrorToName(rc));
+		int detail = wolfSSH_get_error(ssh);
+		LOG_WRN("ssh accept failed: rc=%d (%s), detail=%d (%s)", rc,
+			wolfSSH_ErrorToName(rc), detail,
+			wolfSSH_get_error_name(ssh) != nullptr ? wolfSSH_get_error_name(ssh) : "unknown");
 		wolfSSH_free(ssh);
 		return -EIO;
 	}
