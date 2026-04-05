@@ -263,9 +263,12 @@ void PrintStatus(const Runtime &runtime, const Io &io)
 
 	EmitLinef(io, "AP: %s  SSID: %s  IP: %s  Clients: %d",
 		  wifi.ap_enabled ? "on" : "off", wifi.ap_ssid, kApIpAddr, wifi.ap_clients);
-	EmitLinef(io, "STA: %s  Saved SSID: %s  RSSI: %d",
+	EmitLinef(io, "STA: %s  Saved SSID: %s  IP: %s  RSSI: %d",
 		  wifi.sta_connected ? "connected" : wifi.sta_state,
-		  wifi.saved_ssid[0] != '\0' ? wifi.saved_ssid : "-", wifi.sta_rssi);
+		  wifi.saved_ssid[0] != '\0' ? wifi.saved_ssid : "-",
+		  wifi.sta_ip[0] != '\0' ? wifi.sta_ip : "-", wifi.sta_rssi);
+	EmitLinef(io, "HTTP: AP=http://%s/  STA=http://%s/",
+		  kApIpAddr, wifi.sta_ip[0] != '\0' ? wifi.sta_ip : "pending");
 
 	for (size_t i = 0; i < kFanCount; ++i) {
 		EmitLinef(io,

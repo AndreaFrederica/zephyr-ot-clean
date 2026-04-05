@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <zephyr/net/net_ip.h>
 #include <zephyr/net/wifi.h>
 
 namespace fanctl {
@@ -45,6 +46,7 @@ struct WifiSnapshot {
 	char ap_ssid[WIFI_SSID_MAX_LEN + 1];
 	char saved_ssid[WIFI_SSID_MAX_LEN + 1];
 	char sta_state[24];
+	char sta_ip[NET_IPV4_ADDR_LEN];
 	int sta_rssi;
 };
 

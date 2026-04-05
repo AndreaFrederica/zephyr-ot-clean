@@ -504,7 +504,7 @@ int CmdWifiConnect(const struct shell *sh, size_t argc, char **argv)
 		return rc;
 	}
 
-	shell_print(sh, "Connected successfully!");
+	shell_print(sh, "Connection request sent.");
 	cli::PrintStatus(g_runtime, MakeIo(sh));
 	return 0;
 }

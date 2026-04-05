@@ -142,7 +142,7 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 
 		(void)snprintf(response, sizeof(response),
 			       "{\"ap\":{\"enabled\":%s,\"ssid\":\"%s\",\"psk\":\"%s\",\"ip\":\"%s\",\"clients\":%d},"
-			       "\"sta\":{\"connected\":%s,\"ssid\":\"%s\",\"state\":\"%s\",\"rssi\":%d},"
+			       "\"sta\":{\"connected\":%s,\"ssid\":\"%s\",\"state\":\"%s\",\"ip\":\"%s\",\"rssi\":%d},"
 			       "\"fans\":[{\"id\":1,\"enabled\":%s,\"use_adc_target\":%s,"
 			       "\"percent\":%u,\"effective_percent\":%u,\"pwm_percent\":%u,"
 			       "\"adc_target_percent\":%u,\"actual_percent\":%u,\"adc_raw\":%d,"
@@ -157,7 +157,7 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 			       "\"percent_to_pwm\":\"%s\",\"percent_to_rpm\":\"%s\"}}",
 			       wifi.ap_enabled ? "true" : "false", ap_ssid, kApPsk, kApIpAddr,
 			       wifi.ap_clients, wifi.sta_connected ? "true" : "false", sta_ssid,
-			       wifi.sta_state, wifi.sta_rssi,
+			       wifi.sta_state, wifi.sta_ip, wifi.sta_rssi,
 			       fans[0].enabled ? "true" : "false",
 			       fans[0].use_adc_target ? "true" : "false", fans[0].percent,
 			       fans[0].effective_percent, fans[0].pwm_percent,

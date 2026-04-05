@@ -16,6 +16,7 @@
 #include "http_api.hpp"
 #include "http_common.hpp"
 #include "storage.hpp"
+#include "wifi_manager.hpp"
 
 LOG_MODULE_REGISTER(http_server, LOG_LEVEL_INF);
 
@@ -36,6 +37,7 @@ HttpServer::HttpServer(const ServiceContext &services)
 
 void HttpServer::Start()
 {
+	LOG_INF("HTTP server thread starting on port %d", kHttpPort);
 	k_thread_create(&thread_, g_http_server_stack, K_THREAD_STACK_SIZEOF(g_http_server_stack),
 			ThreadEntry, this, nullptr, nullptr, 6, 0, K_NO_WAIT);
 	k_thread_name_set(&thread_, "fanctl_http");
@@ -123,25 +125,31 @@ void HttpServer::Run()
 	addr.sin_port = htons(kHttpPort);
 	addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
+	LOG_INF("HTTP server binding to 0.0.0.0:%d", kHttpPort);
+
 	int server = zsock_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (server < 0) {
-		LOG_ERR("socket create failed");
+		LOG_ERR("HTTP socket create failed");
 		return;
 	}
 
 	if (zsock_bind(server, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) != 0) {
-		LOG_ERR("bind failed");
+		LOG_ERR("HTTP bind failed");
 		(void)zsock_close(server);
 		return;
 	}
 
 	if (zsock_listen(server, http::kHttpBacklog) != 0) {
-		LOG_ERR("listen failed");
+		LOG_ERR("HTTP listen failed");
 		(void)zsock_close(server);
 		return;
 	}
 
-	LOG_INF("HTTP server listening on port %d", kHttpPort);
+	WifiSnapshot wifi = {};
+	wifi_manager_.GetSnapshot(&wifi);
+	LOG_INF("HTTP server listening on 0.0.0.0:%d", kHttpPort);
+	LOG_INF("HTTP endpoints: AP=http://%s/ STA=http://%s/", kApIpAddr,
+		wifi.sta_ip[0] != '\0' ? wifi.sta_ip : "pending");
 
 	while (true) {
 		int client = zsock_accept(server, nullptr, nullptr);

@@ -12,6 +12,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/net/net_event.h>
 #include <zephyr/net/dhcpv4_server.h>
 #include <zephyr/net/sntp.h>
 #include <zephyr/net/socket.h>
@@ -61,6 +62,16 @@ WifiManager::WifiManager()
 	saved_ssid_[0] = '\0';
 	memset(scan_results_, 0, sizeof(scan_results_));
 	k_sem_init(&scan_sem_, 0, 1);
+	k_work_init_delayable(&ntp_sync_work_, NtpSyncWorkHandler);
+}
+
+void WifiManager::NtpSyncWorkHandler(struct k_work *work)
+{
+	struct k_work_delayable *delayable = k_work_delayable_from_work(work);
+	WifiManager *self = CONTAINER_OF(delayable, WifiManager, ntp_sync_work_);
+	if (self != nullptr) {
+		self->SyncTimeViaNtp();
+	}
 }
 
 void WifiManager::BuildApSsid(const settings::WifiConfig *wifi_config)
@@ -141,10 +152,8 @@ int WifiManager::ReadStatus(struct wifi_iface_status *status)
 void WifiManager::EventHandler(struct net_mgmt_event_callback *cb, uint64_t mgmt_event,
 			       struct net_if *iface)
 {
-	ARG_UNUSED(iface);
-
 	if (g_instance != nullptr) {
-		g_instance->HandleEvent(cb, mgmt_event);
+		g_instance->HandleEvent(cb, mgmt_event, iface);
 	}
 }
 
@@ -279,9 +288,11 @@ void WifiManager::SyncTimeViaNtp()
 	}
 }
 
-void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_event)
+void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_event,
+			      struct net_if *iface)
 {
 	k_mutex_lock(&mutex_, K_FOREVER);
+	bool schedule_ntp_sync = false;
 
 	switch (mgmt_event) {
 	case NET_EVENT_WIFI_CONNECT_RESULT: {
@@ -290,12 +301,8 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		sta_connected_ = (status->status == 0);
 		if (sta_connected_) {
 			LOG_INF("WiFi connected to: %s", saved_ssid_);
-			// 如果刚刚连接成功，延迟触发 NTP 同步
 			if (!was_connected) {
-				k_mutex_unlock(&mutex_);
-				k_sleep(K_SECONDS(5));  // 等待 DHCP 完成
-				SyncTimeViaNtp();
-				k_mutex_lock(&mutex_, K_FOREVER);
+				schedule_ntp_sync = true;
 			}
 		} else {
 			LOG_WRN("WiFi connection failed: status=%d", status->status);
@@ -304,6 +311,7 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 	}
 	case NET_EVENT_WIFI_DISCONNECT_RESULT:
 		sta_connected_ = false;
+		(void)k_work_cancel_delayable(&ntp_sync_work_);
 		LOG_INF("WiFi disconnected");
 		break;
 	case NET_EVENT_WIFI_AP_ENABLE_RESULT:
@@ -333,11 +341,27 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		k_sem_give(&scan_sem_);
 		LOG_INF("WiFi scan completed, found %u networks", scan_count_);
 		break;
+	case NET_EVENT_IPV4_DHCP_BOUND:
+	case NET_EVENT_IPV4_ADDR_ADD: {
+		if (sta_iface_ != nullptr && iface == sta_iface_) {
+			char ip[NET_IPV4_ADDR_LEN] = { 0 };
+			struct net_in_addr *ipv4 = net_if_ipv4_get_global_addr(sta_iface_, NET_ADDR_PREFERRED);
+			if (ipv4 != nullptr &&
+			    net_addr_ntop(AF_INET, ipv4, ip, sizeof(ip)) != nullptr) {
+				LOG_INF("STA IPv4 ready: %s", ip);
+			}
+		}
+		break;
+	}
 	default:
 		break;
 	}
 
 	k_mutex_unlock(&mutex_);
+
+	if (schedule_ntp_sync) {
+		(void)k_work_reschedule(&ntp_sync_work_, K_SECONDS(5));
+	}
 }
 
 int WifiManager::Init()
@@ -359,7 +383,9 @@ int WifiManager::Init()
 					     NET_EVENT_WIFI_AP_STA_CONNECTED |
 					     NET_EVENT_WIFI_AP_STA_DISCONNECTED |
 					     NET_EVENT_WIFI_SCAN_RESULT |
-					     NET_EVENT_WIFI_SCAN_DONE);
+					     NET_EVENT_WIFI_SCAN_DONE |
+					     NET_EVENT_IPV4_ADDR_ADD |
+					     NET_EVENT_IPV4_DHCP_BOUND);
 	net_mgmt_add_event_callback(&callback_);
 
 	// Load WiFi config
@@ -472,6 +498,7 @@ int WifiManager::SaveAndConnect(const char *ssid, const char *psk)
 
 	k_mutex_lock(&mutex_, K_FOREVER);
 	(void)snprintf(saved_ssid_, sizeof(saved_ssid_), "%s", ssid);
+	sta_connected_ = false;
 	k_mutex_unlock(&mutex_);
 	settings::SaveWifiCredentials(ssid, psk_len > 0U ? psk : "");
 
@@ -510,6 +537,14 @@ void WifiManager::GetSnapshot(WifiSnapshot *snapshot)
 
 	(void)snprintf(snapshot->sta_state, sizeof(snapshot->sta_state), "%s",
 		       wifi_state_txt(static_cast<enum wifi_iface_state>(status.state)));
+	snapshot->sta_ip[0] = '\0';
+	if (sta_iface_ != nullptr) {
+		struct net_in_addr *ipv4 = net_if_ipv4_get_global_addr(sta_iface_, NET_ADDR_PREFERRED);
+		if (ipv4 != nullptr &&
+		    net_addr_ntop(AF_INET, ipv4, snapshot->sta_ip, sizeof(snapshot->sta_ip)) == nullptr) {
+			snapshot->sta_ip[0] = '\0';
+		}
+	}
 	snapshot->sta_rssi = status.rssi;
 }
 

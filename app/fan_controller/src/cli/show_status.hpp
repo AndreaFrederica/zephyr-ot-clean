@@ -185,8 +185,12 @@ inline void WriteWifi(EmitLineFn emit, void *ctx, WifiManager &wifi_manager)
 	detail::EmitLinef(emit, ctx, "  AP clients         : %d", wifi.ap_clients);
 	detail::EmitLinef(emit, ctx, "  STA connected      : %s", wifi.sta_connected ? "true" : "false");
 	detail::EmitLinef(emit, ctx, "  STA state          : %s", wifi.sta_state[0] != '\0' ? wifi.sta_state : "-");
+	detail::EmitLinef(emit, ctx, "  STA IP             : %s", wifi.sta_ip[0] != '\0' ? wifi.sta_ip : "-");
 	detail::EmitLinef(emit, ctx, "  Saved SSID         : %s", wifi.saved_ssid[0] != '\0' ? wifi.saved_ssid : "-");
 	detail::EmitLinef(emit, ctx, "  RSSI               : %d dBm", wifi.sta_rssi);
+	detail::EmitLinef(emit, ctx, "  HTTP               : http://%s/  %s",
+			  kApIpAddr,
+			  wifi.sta_ip[0] != '\0' ? wifi.sta_ip : "STA pending");
 
 	detail::EmitLinef(emit, ctx, "Wi-Fi Config");
 	if (rc != 0) {

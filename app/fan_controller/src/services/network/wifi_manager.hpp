@@ -35,10 +35,11 @@ public:
 	void ClearScanResults();
 
 private:
+	static void NtpSyncWorkHandler(struct k_work *work);
 	bool TrySyncNtp(const char *server, int port, struct sntp_time *out_time);
 	static void EventHandler(struct net_mgmt_event_callback *cb, uint64_t mgmt_event,
 				 struct net_if *iface);
-	void HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_event);
+	void HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_event, struct net_if *iface);
 	void HandleScanResult(struct wifi_scan_result *result);
 	void BuildApSsid(const settings::WifiConfig *wifi_config = nullptr);
 	int ConnectToNetwork(const char *ssid, const char *psk);
@@ -61,6 +62,7 @@ private:
 	size_t scan_count_;
 	bool scan_complete_;
 	struct k_sem scan_sem_;
+	struct k_work_delayable ntp_sync_work_;
 };
 
 } // namespace fanctl
