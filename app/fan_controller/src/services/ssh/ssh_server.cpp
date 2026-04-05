@@ -17,6 +17,7 @@
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/coding.h>
 #include <wolfssl/wolfcrypt/ecc.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
 #include <wolfssl/wolfcrypt/random.h>
 
 #include "command_session.hpp"
@@ -31,8 +32,8 @@ namespace {
 
 K_THREAD_STACK_DEFINE(g_ssh_server_stack, kSshStackSize);
 
-constexpr const char *kPemBegin = "-----BEGIN EC PRIVATE KEY-----\n";
-constexpr const char *kPemEnd = "-----END EC PRIVATE KEY-----\n";
+constexpr const char *kPemBegin = "-----BEGIN PRIVATE KEY-----\n";
+constexpr const char *kPemEnd = "-----END PRIVATE KEY-----\n";
 
 struct ConnectionContext {
 	explicit ConnectionContext(const ServiceContext &services, const settings::SshConfig &ssh_config)
@@ -60,48 +61,6 @@ const char *AuthTypeName(byte auth_type)
 	default:
 		return "unknown";
 	}
-}
-
-bool HostKeyHasPublicPart(const char *pem, size_t pem_len)
-{
-	if (pem == nullptr || pem_len == 0U) {
-		return false;
-	}
-
-	word32 der_len = static_cast<word32>(pem_len * 2U);
-	byte *der = static_cast<byte *>(malloc(der_len));
-	if (der == nullptr) {
-		return false;
-	}
-
-	int rc = wc_KeyPemToDer(reinterpret_cast<const byte *>(pem), static_cast<word32>(pem_len),
-				       der, der_len, nullptr);
-	if (rc <= 0) {
-		free(der);
-		return false;
-	}
-
-	ecc_key key;
-	rc = wc_ecc_init(&key);
-	if (rc != 0) {
-		free(der);
-		return false;
-	}
-
-	word32 idx = 0U;
-	rc = wc_EccPrivateKeyDecode(der, &idx, &key, static_cast<word32>(rc));
-	free(der);
-	if (rc != 0) {
-		wc_ecc_free(&key);
-		return false;
-	}
-
-	byte public_key[65];
-	word32 public_key_len = sizeof(public_key);
-	rc = wc_ecc_export_x963(&key, public_key, &public_key_len);
-	wc_ecc_free(&key);
-
-	return rc == 0;
 }
 
 int SendStreamAll(WOLFSSH *ssh, const char *data, size_t len)
@@ -368,11 +327,11 @@ int SshServer::EnsureHostKey()
 	size_t existing_len = 0U;
 	if (storage::ReadTextFile(config_.host_key_path, existing, sizeof(existing), &existing_len) == 0 &&
 	    existing_len > 0U) {
-		if (HostKeyHasPublicPart(existing, existing_len)) {
+		if (strstr(existing, "-----BEGIN PRIVATE KEY-----") != nullptr) {
 			return 0;
 		}
 
-		LOG_WRN("ssh host key missing public part, regenerating: %s", config_.host_key_path);
+		LOG_WRN("ssh host key uses legacy format, regenerating: %s", config_.host_key_path);
 	}
 
 	WC_RNG rng;
@@ -402,11 +361,12 @@ int SshServer::EnsureHostKey()
 		return -EIO;
 	}
 
-	int der_len = wc_EccKeyDerSize(&key, 1);
-	if (der_len <= 0) {
+	word32 der_len = 0U;
+	rc = wc_EccKeyToPKCS8(&key, nullptr, &der_len);
+	if (rc != WC_NO_ERR_TRACE(LENGTH_ONLY_E) || der_len == 0U) {
 		wc_ecc_free(&key);
 		wc_FreeRng(&rng);
-		LOG_ERR("ssh host key der size failed: %d", der_len);
+		LOG_ERR("ssh host key der size failed: %d", rc);
 		return -EIO;
 	}
 
@@ -417,7 +377,7 @@ int SshServer::EnsureHostKey()
 		return -ENOMEM;
 	}
 
-	rc = wc_EccKeyToDer(&key, der, static_cast<word32>(der_len));
+	rc = wc_EccKeyToPKCS8(&key, der, &der_len);
 
 	wc_ecc_free(&key);
 	wc_FreeRng(&rng);
