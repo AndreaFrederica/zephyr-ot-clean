@@ -21,6 +21,8 @@
 
 #include "settings_store.hpp"
 
+// 设置日志级别为 INF，但关键函数使用 LOG_DBG
+// 如需查看详细 WiFi 调试日志，可改为 LOG_LEVEL_DBG
 LOG_MODULE_REGISTER(wifi_manager, LOG_LEVEL_INF);
 
 namespace fanctl {
@@ -56,7 +58,7 @@ bool TrySyncNtpAddress(const struct net_in_addr *addr, int port, struct sntp_tim
 
 WifiManager::WifiManager()
 	: ap_iface_(nullptr), sta_iface_(nullptr), ap_enabled_(false), sta_connected_(false),
-	  ap_clients_(0), scan_count_(0), scan_complete_(false)
+	  ap_clients_(0), scan_count_(0), scan_complete_(false), scan_status_(0)
 {
 	ap_ssid_[0] = '\0';
 	saved_ssid_[0] = '\0';
@@ -120,6 +122,7 @@ int WifiManager::EnableDhcpServer()
 int WifiManager::ConnectToNetwork(const char *ssid, const char *psk)
 {
 	if (sta_iface_ == nullptr || ssid == nullptr || ssid[0] == '\0') {
+		LOG_ERR("ConnectToNetwork: invalid parameters");
 		return -EINVAL;
 	}
 
@@ -135,7 +138,24 @@ int WifiManager::ConnectToNetwork(const char *ssid, const char *psk)
 	params.band = WIFI_FREQ_BAND_2_4_GHZ;
 	params.mfp = WIFI_MFP_OPTIONAL;
 
-	return net_mgmt(NET_REQUEST_WIFI_CONNECT, sta_iface_, &params, sizeof(params));
+	LOG_INF("========================================");
+	LOG_INF("WiFi STA: Starting connection attempt");
+	LOG_INF("  SSID:     %s", ssid);
+	LOG_INF("  Security: %s", psk_len > 0 ? "WPA2-PSK" : "Open");
+	LOG_INF("  Channel:  Auto (any)");
+	LOG_INF("  Band:     2.4GHz");
+	LOG_INF("========================================");
+
+	int rc = net_mgmt(NET_REQUEST_WIFI_CONNECT, sta_iface_, &params, sizeof(params));
+	
+	if (rc != 0) {
+		LOG_ERR("WiFi STA: net_mgmt connect request failed: %d (%s)", 
+			rc, rc == -EALREADY ? "Already connecting/connected" : 
+			    rc == -EINVAL ? "Invalid parameter" : 
+			    rc == -ENODEV ? "Device not ready" : "Unknown error");
+	}
+	
+	return rc;
 }
 
 int WifiManager::ReadStatus(struct wifi_iface_status *status)
@@ -299,20 +319,91 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		const struct wifi_status *status = static_cast<const struct wifi_status *>(cb->info);
 		bool was_connected = sta_connected_;
 		sta_connected_ = (status->status == 0);
+		
+		LOG_INF("========================================");
 		if (sta_connected_) {
-			LOG_INF("WiFi connected to: %s", saved_ssid_);
+			LOG_INF("WiFi STA: CONNECTED SUCCESSFULLY");
+			LOG_INF("  SSID: %s", saved_ssid_);
 			if (!was_connected) {
 				schedule_ntp_sync = true;
 			}
 		} else {
-			LOG_WRN("WiFi connection failed: status=%d", status->status);
+			LOG_ERR("WiFi STA: CONNECTION FAILED");
+			LOG_ERR("  Status code: %d", status->status);
+			// ESP32 WiFi status codes
+			if (status->status == 1) {
+				LOG_ERR("  Reason: AUTH_EXPIRE (Authentication expired)");
+			} else if (status->status == 2) {
+				LOG_ERR("  Reason: AUTH_LEAVE (Authentication left)");
+			} else if (status->status == 3) {
+				LOG_ERR("  Reason: ASSOC_EXPIRE (Association expired)");
+			} else if (status->status == 4) {
+				LOG_ERR("  Reason: ASSOC_TOOMANY (Too many associations)");
+			} else if (status->status == 5) {
+				LOG_ERR("  Reason: NOT_AUTHED (Not authenticated)");
+			} else if (status->status == 6) {
+				LOG_ERR("  Reason: NOT_ASSOCED (Not associated)");
+			} else if (status->status == 7) {
+				LOG_ERR("  Reason: ASSOC_LEAVE (Association left)");
+			} else if (status->status == 8) {
+				LOG_ERR("  Reason: ASSOC_NOT_AUTHED (Association not authenticated)");
+			} else if (status->status == 9) {
+				LOG_ERR("  Reason: DISASSOC_PWRCAP_BAD (Disassociate - power capability bad)");
+			} else if (status->status == 10) {
+				LOG_ERR("  Reason: DISASSOC_SUPCHAN_BAD (Disassociate - supported channels bad)");
+			} else if (status->status == 11) {
+				LOG_ERR("  Reason: IE_INVALID (Invalid IE)");
+			} else if (status->status == 12) {
+				LOG_ERR("  Reason: MIC_FAILURE (MIC failure)");
+			} else if (status->status == 13) {
+				LOG_ERR("  Reason: 4WAY_HANDSHAKE_TIMEOUT (4-way handshake timeout)");
+				LOG_ERR("  Hint: Check if password is correct");
+			} else if (status->status == 14) {
+				LOG_ERR("  Reason: GROUP_KEY_UPDATE_TIMEOUT (Group key handshake timeout)");
+			} else if (status->status == 15) {
+				LOG_ERR("  Reason: IE_IN_4WAY_DIFFERS (IE in 4-way differs)");
+			} else if (status->status == 16) {
+				LOG_ERR("  Reason: GROUP_CIPHER_INVALID (Group cipher invalid)");
+			} else if (status->status == 17) {
+				LOG_ERR("  Reason: PAIRWISE_CIPHER_INVALID (Pairwise cipher invalid)");
+			} else if (status->status == 18) {
+				LOG_ERR("  Reason: AKMP_INVALID (AKMP invalid)");
+			} else if (status->status == 19) {
+				LOG_ERR("  Reason: UNSUPP_RSN_IE_VERSION (Unsupported RSN IE version)");
+			} else if (status->status == 20) {
+				LOG_ERR("  Reason: INVALID_RSN_IE_CAP (Invalid RSN IE capability)");
+			} else if (status->status == 21) {
+				LOG_ERR("  Reason: 802_1X_AUTH_FAILED (802.1X authentication failed)");
+			} else if (status->status == 22) {
+				LOG_ERR("  Reason: CIPHER_SUITE_REJECTED (Cipher suite rejected)");
+			} else if (status->status == 23) {
+				LOG_ERR("  Reason: INVALID_PMKID (Invalid PMKID)");
+			} else if (status->status == 24) {
+				LOG_ERR("  Reason: NO_AP_FOUND (No AP found)");
+				LOG_ERR("  Hint: Check if SSID is correct and in range");
+			} else if (status->status == 25) {
+				LOG_ERR("  Reason: SCAN_FAIL (Scan failed)");
+			} else if (status->status == 26) {
+				LOG_ERR("  Reason: BEACON_TIMEOUT (Beacon timeout)");
+				LOG_ERR("  Hint: AP may be out of range or interference");
+			} else if (status->status == 203) {
+				LOG_ERR("  Reason: ASSOC_FAIL (Association failed)");
+			} else if (status->status == 205) {
+				LOG_ERR("  Reason: CONNECTION_FAIL (Connection failed)");
+			} else if (status->status == 206) {
+				LOG_ERR("  Reason: AP_NOT_FOUND (AP not found)");
+				LOG_ERR("  Hint: Check if SSID is correct");
+			} else {
+				LOG_ERR("  Reason: Unknown error code");
+			}
 		}
+		LOG_INF("========================================");
 		break;
 	}
 	case NET_EVENT_WIFI_DISCONNECT_RESULT:
 		sta_connected_ = false;
 		(void)k_work_cancel_delayable(&ntp_sync_work_);
-		LOG_INF("WiFi disconnected");
+		LOG_INF("WiFi STA: Disconnected from AP");
 		break;
 	case NET_EVENT_WIFI_AP_ENABLE_RESULT:
 		ap_enabled_ = true;
@@ -334,21 +425,51 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		const struct wifi_scan_result *result =
 			static_cast<const struct wifi_scan_result *>(cb->info);
 		HandleScanResult(const_cast<struct wifi_scan_result *>(result));
+		// 详细日志在 HandleScanResult 中
 		break;
 	}
 	case NET_EVENT_WIFI_SCAN_DONE:
+		scan_status_ = cb->info != nullptr
+				     ? static_cast<const struct wifi_status *>(cb->info)->status
+				     : 0;
 		scan_complete_ = true;
 		k_sem_give(&scan_sem_);
-		LOG_INF("WiFi scan completed, found %u networks", scan_count_);
+		LOG_INF("========================================");
+		LOG_INF("WiFi Scan: COMPLETED");
+		LOG_INF("  Status: %d", scan_status_);
+		LOG_INF("  Total networks found: %u", scan_count_);
+		LOG_INF("========================================");
 		break;
-	case NET_EVENT_IPV4_DHCP_BOUND:
+	case NET_EVENT_IPV4_DHCP_BOUND: {
+		if (sta_iface_ != nullptr && iface == sta_iface_) {
+			char ip[NET_IPV4_ADDR_LEN] = { 0 };
+			struct net_in_addr *ipv4 = net_if_ipv4_get_global_addr(sta_iface_, NET_ADDR_PREFERRED);
+			if (ipv4 != nullptr &&
+			    net_addr_ntop(AF_INET, ipv4, ip, sizeof(ip)) != nullptr) {
+				LOG_INF("========================================");
+				LOG_INF("WiFi STA: DHCP Bound (IPv4 ready)");
+				LOG_INF("  IP Address: %s", ip);
+				
+				// 获取网关信息
+				struct net_if_ipv4 *ipv4_config = sta_iface_->config.ip.ipv4;
+				if (ipv4_config != nullptr && ipv4_config->gw.s_addr != 0) {
+					char gw[NET_IPV4_ADDR_LEN];
+					if (net_addr_ntop(AF_INET, &ipv4_config->gw, gw, sizeof(gw)) != nullptr) {
+						LOG_INF("  Gateway:    %s", gw);
+					}
+				}
+				LOG_INF("========================================");
+			}
+		}
+		break;
+	}
 	case NET_EVENT_IPV4_ADDR_ADD: {
 		if (sta_iface_ != nullptr && iface == sta_iface_) {
 			char ip[NET_IPV4_ADDR_LEN] = { 0 };
 			struct net_in_addr *ipv4 = net_if_ipv4_get_global_addr(sta_iface_, NET_ADDR_PREFERRED);
 			if (ipv4 != nullptr &&
 			    net_addr_ntop(AF_INET, ipv4, ip, sizeof(ip)) != nullptr) {
-				LOG_INF("STA IPv4 ready: %s", ip);
+				LOG_INF("WiFi STA: IPv4 address added: %s", ip);
 			}
 		}
 		break;
@@ -375,7 +496,7 @@ int WifiManager::Init()
 	}
 
 	g_instance = this;
-	net_mgmt_init_event_callback(&callback_, EventHandler,
+	net_mgmt_init_event_callback(&wifi_callback_, EventHandler,
 				     NET_EVENT_WIFI_CONNECT_RESULT |
 					     NET_EVENT_WIFI_DISCONNECT_RESULT |
 					     NET_EVENT_WIFI_AP_ENABLE_RESULT |
@@ -383,10 +504,13 @@ int WifiManager::Init()
 					     NET_EVENT_WIFI_AP_STA_CONNECTED |
 					     NET_EVENT_WIFI_AP_STA_DISCONNECTED |
 					     NET_EVENT_WIFI_SCAN_RESULT |
-					     NET_EVENT_WIFI_SCAN_DONE |
-					     NET_EVENT_IPV4_ADDR_ADD |
+					     NET_EVENT_WIFI_SCAN_DONE);
+	net_mgmt_add_event_callback(&wifi_callback_);
+
+	net_mgmt_init_event_callback(&ipv4_callback_, EventHandler,
+				     NET_EVENT_IPV4_ADDR_ADD |
 					     NET_EVENT_IPV4_DHCP_BOUND);
-	net_mgmt_add_event_callback(&callback_);
+	net_mgmt_add_event_callback(&ipv4_callback_);
 
 	// Load WiFi config
 	settings::WifiConfig wifi_config = {};
@@ -498,7 +622,6 @@ int WifiManager::SaveAndConnect(const char *ssid, const char *psk)
 
 	k_mutex_lock(&mutex_, K_FOREVER);
 	(void)snprintf(saved_ssid_, sizeof(saved_ssid_), "%s", ssid);
-	sta_connected_ = false;
 	k_mutex_unlock(&mutex_);
 	settings::SaveWifiCredentials(ssid, psk_len > 0U ? psk : "");
 
@@ -537,15 +660,19 @@ void WifiManager::GetSnapshot(WifiSnapshot *snapshot)
 
 	(void)snprintf(snapshot->sta_state, sizeof(snapshot->sta_state), "%s",
 		       wifi_state_txt(static_cast<enum wifi_iface_state>(status.state)));
-	snapshot->sta_ip[0] = '\0';
-	if (sta_iface_ != nullptr) {
+	snapshot->sta_rssi = status.rssi;
+	
+	// Copy IPv4 address
+	if (sta_iface_ != nullptr && sta_connected_) {
 		struct net_in_addr *ipv4 = net_if_ipv4_get_global_addr(sta_iface_, NET_ADDR_PREFERRED);
-		if (ipv4 != nullptr &&
-		    net_addr_ntop(AF_INET, ipv4, snapshot->sta_ip, sizeof(snapshot->sta_ip)) == nullptr) {
+		if (ipv4 != nullptr) {
+			net_addr_ntop(AF_INET, ipv4, snapshot->sta_ip, sizeof(snapshot->sta_ip));
+		} else {
 			snapshot->sta_ip[0] = '\0';
 		}
+	} else {
+		snapshot->sta_ip[0] = '\0';
 	}
-	snapshot->sta_rssi = status.rssi;
 }
 
 void WifiManager::HandleScanResult(struct wifi_scan_result *result)
@@ -559,11 +686,18 @@ void WifiManager::HandleScanResult(struct wifi_scan_result *result)
 		return;
 	}
 	
+	char ssid_str[WIFI_SSID_MAX_LEN + 1] = { 0 };
+	size_t ssid_len = MIN(static_cast<size_t>(result->ssid_length), sizeof(ssid_str) - 1U);
+	memcpy(ssid_str, result->ssid, ssid_len);
+	ssid_str[ssid_len] = '\0';
+	
 	// Check for duplicate
 	for (size_t i = 0; i < scan_count_; ++i) {
-		if (strncmp(scan_results_[i].ssid, reinterpret_cast<const char*>(result->ssid), WIFI_SSID_MAX_LEN) == 0) {
+		if (strncmp(scan_results_[i].ssid, ssid_str, WIFI_SSID_MAX_LEN) == 0) {
 			// Update if new result has better signal
 			if (result->rssi > scan_results_[i].rssi) {
+				LOG_DBG("WiFi Scan: Updated '%s' RSSI %d -> %d (ch:%d)",
+					ssid_str, scan_results_[i].rssi, result->rssi, result->channel);
 				scan_results_[i].rssi = result->rssi;
 				scan_results_[i].channel = result->channel;
 				memcpy(scan_results_[i].bssid, result->mac, 6);
@@ -572,9 +706,29 @@ void WifiManager::HandleScanResult(struct wifi_scan_result *result)
 		}
 	}
 	
+	// Log new found network
+	const char *security_str = "unknown";
+	switch (result->security) {
+	case WIFI_SECURITY_TYPE_NONE: security_str = "open"; break;
+	case WIFI_SECURITY_TYPE_PSK: security_str = "WPA2-PSK"; break;
+	case WIFI_SECURITY_TYPE_PSK_SHA256: security_str = "WPA2-PSK-SHA256"; break;
+	case WIFI_SECURITY_TYPE_SAE: security_str = "WPA3-SAE"; break;
+	case WIFI_SECURITY_TYPE_WEP: security_str = "WEP"; break;
+	case WIFI_SECURITY_TYPE_WPA_PSK: security_str = "WPA-PSK"; break;
+	case WIFI_SECURITY_TYPE_EAP: security_str = "EAP"; break;
+	default: security_str = "unknown"; break;  // 处理所有其他类型
+	}
+	
+	LOG_INF("WiFi Scan: #%02u | %-32s | RSSI: %4d dBm | Ch: %2d | %s",
+		static_cast<unsigned int>(scan_count_ + 1),
+		ssid_str,
+		result->rssi,
+		result->channel,
+		security_str);
+	
 	// Add new result
 	WifiScanResult &entry = scan_results_[scan_count_++];
-	(void)snprintf(entry.ssid, sizeof(entry.ssid), "%s", reinterpret_cast<const char*>(result->ssid));
+	(void)snprintf(entry.ssid, sizeof(entry.ssid), "%s", ssid_str);
 	memcpy(entry.bssid, result->mac, 6);
 	entry.rssi = result->rssi;
 	entry.channel = result->channel;
@@ -585,12 +739,29 @@ void WifiManager::HandleScanResult(struct wifi_scan_result *result)
 int WifiManager::StartScan()
 {
 	if (sta_iface_ == nullptr) {
+		LOG_ERR("WiFi Scan: STA interface not available");
 		return -ENODEV;
+	}
+
+	struct wifi_iface_status status = {};
+	int status_rc = ReadStatus(&status);
+	
+	LOG_INF("========================================");
+	LOG_INF("WiFi Scan: Starting...");
+	LOG_INF("  Type:    Active");
+	LOG_INF("  Active dwell:  100ms");
+	LOG_INF("  Passive dwell: 200ms");
+	if (status_rc == 0) {
+		LOG_INF("  STA state: %s", wifi_state_txt(static_cast<enum wifi_iface_state>(status.state)));
+		LOG_INF("  STA RSSI:  %d", status.rssi);
+	} else {
+		LOG_INF("  STA status query failed: %d", status_rc);
 	}
 	
 	// Clear previous results
 	scan_count_ = 0;
 	scan_complete_ = false;
+	scan_status_ = 0;
 	memset(scan_results_, 0, sizeof(scan_results_));
 	
 	struct wifi_scan_params params = {};
@@ -600,16 +771,22 @@ int WifiManager::StartScan()
 	
 	int rc = net_mgmt(NET_REQUEST_WIFI_SCAN, sta_iface_, &params, sizeof(params));
 	if (rc != 0 && rc != -EALREADY) {
-		LOG_WRN("Scan request failed: %d", rc);
+		LOG_ERR("WiFi Scan: Request failed: %d", rc);
 		return rc;
 	}
 	
+	LOG_INF("WiFi Scan: Request sent successfully");
 	return 0;
 }
 
 bool WifiManager::IsScanComplete()
 {
 	return scan_complete_;
+}
+
+int WifiManager::GetScanStatus()
+{
+	return scan_status_;
 }
 
 void WifiManager::GetScanResults(WifiScanResult *results, size_t max_count, size_t *out_count)
@@ -632,6 +809,7 @@ void WifiManager::ClearScanResults()
 	k_mutex_lock(&mutex_, K_FOREVER);
 	scan_count_ = 0;
 	scan_complete_ = false;
+	scan_status_ = 0;
 	memset(scan_results_, 0, sizeof(scan_results_));
 	k_mutex_unlock(&mutex_);
 }

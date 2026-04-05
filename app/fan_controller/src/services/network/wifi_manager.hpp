@@ -31,6 +31,7 @@ public:
 	// Scan API
 	int StartScan();
 	bool IsScanComplete();
+	int GetScanStatus();
 	void GetScanResults(WifiScanResult *results, size_t max_count, size_t *out_count);
 	void ClearScanResults();
 
@@ -49,7 +50,8 @@ private:
 
 	struct net_if *ap_iface_;
 	struct net_if *sta_iface_;
-	struct net_mgmt_event_callback callback_;
+	struct net_mgmt_event_callback wifi_callback_;
+	struct net_mgmt_event_callback ipv4_callback_;
 	struct k_mutex mutex_;
 	bool ap_enabled_;
 	bool sta_connected_;
@@ -61,6 +63,7 @@ private:
 	WifiScanResult scan_results_[16];
 	size_t scan_count_;
 	bool scan_complete_;
+	int scan_status_;
 	struct k_sem scan_sem_;
 	struct k_work_delayable ntp_sync_work_;
 };

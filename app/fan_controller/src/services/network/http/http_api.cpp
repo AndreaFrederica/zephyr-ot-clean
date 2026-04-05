@@ -470,6 +470,11 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 			k_sleep(K_MSEC(100));
 		}
 
+		if (!wifi_manager.IsScanComplete() || wifi_manager.GetScanStatus() != 0) {
+			(void)SendJsonResult(client, false, "scan did not complete successfully");
+			return true;
+		}
+
 		WifiScanResult results[16];
 		size_t count = 0;
 		wifi_manager.GetScanResults(results, ARRAY_SIZE(results), &count);

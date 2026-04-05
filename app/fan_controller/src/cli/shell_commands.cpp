@@ -390,6 +390,8 @@ int CmdScan(const struct shell *sh, size_t argc, char **argv)
 
 	if (!g_runtime.wifi_manager->IsScanComplete()) {
 		shell_warn(sh, "Scan timeout");
+	} else if (g_runtime.wifi_manager->GetScanStatus() != 0) {
+		shell_warn(sh, "Scan finished with status %d", g_runtime.wifi_manager->GetScanStatus());
 	}
 
 	static WifiScanResult scan_results[16];
@@ -438,6 +440,13 @@ int CmdWifiConnect(const struct shell *sh, size_t argc, char **argv)
 		int timeout = 100;
 		while (!g_runtime.wifi_manager->IsScanComplete() && timeout-- > 0) {
 			k_sleep(K_MSEC(100));
+		}
+
+		if (!g_runtime.wifi_manager->IsScanComplete()) {
+			shell_warn(sh, "Scan timeout");
+		} else if (g_runtime.wifi_manager->GetScanStatus() != 0) {
+			shell_warn(sh, "Scan finished with status %d",
+				   g_runtime.wifi_manager->GetScanStatus());
 		}
 
 		static WifiScanResult connect_scan_results[16];
