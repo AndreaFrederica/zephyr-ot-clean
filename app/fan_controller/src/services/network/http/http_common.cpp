@@ -106,9 +106,14 @@ int SendResponse(int client, const char *status, const char *content_type, const
 
 int SendJsonResult(int client, bool ok, const char *message)
 {
-	char response[160];
+	char response[256];
+	char escaped[128];
+
+	// 转义 message 中的特殊字符，防止 JSON 注入
+	JsonEscape(escaped, sizeof(escaped), message);
+
 	int written = snprintf(response, sizeof(response), "{\"ok\":%s,\"message\":\"%s\"}",
-			       ok ? "true" : "false", message);
+			       ok ? "true" : "false", escaped);
 
 	if (written <= 0 || written >= static_cast<int>(sizeof(response))) {
 		return -ENOMEM;

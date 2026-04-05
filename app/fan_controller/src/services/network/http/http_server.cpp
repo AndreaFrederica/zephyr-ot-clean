@@ -83,10 +83,19 @@ void HttpServer::HandleClient(int client)
 
 	char *content_length_hdr = strstr(buffer, "Content-Length:");
 	int content_length = (content_length_hdr != nullptr)
-				     ? atoi(content_length_hdr + strlen("Content-Length:"))
-				     : 0;
+			     ? atoi(content_length_hdr + strlen("Content-Length:"))
+			     : 0;
+
+	// 安全检查：Content-Length 不能超过缓冲区剩余容量（预留 256 字节给 headers）
+	if (content_length > static_cast<int>(sizeof(buffer)) - 256) {
+		(void)http::SendResponse(client, "413 Payload Too Large", "text/plain",
+					 "Request body too large");
+		return;
+	}
+
 	request.body_len = static_cast<size_t>(content_length > 0 ? content_length : 0);
 
+	// 循环读取 body 数据直到 content_length 或缓冲区满
 	while ((buffer + received) - request.body < content_length &&
 	       received < static_cast<int>(sizeof(buffer)) - 1) {
 		int rc = zsock_recv(client, buffer + received, sizeof(buffer) - 1 - received, 0);
@@ -95,6 +104,14 @@ void HttpServer::HandleClient(int client)
 		}
 		received += rc;
 		buffer[received] = '\0';
+	}
+
+	// 验证实际接收的数据量是否匹配 Content-Length
+	if (content_length > 0 &&
+	    (buffer + received) - request.body < content_length) {
+		(void)http::SendResponse(client, "400 Bad Request", "text/plain",
+					 "Incomplete request body");
+		return;
 	}
 
 	if (strcmp(request.method, "GET") == 0 && strncmp(request.path, "/api/", 5) != 0) {

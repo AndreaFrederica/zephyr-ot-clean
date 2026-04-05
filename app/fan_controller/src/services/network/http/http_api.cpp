@@ -491,6 +491,10 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 					       "%s{\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%u,\"security\":\"%s\"}",
 					       (i > 0) ? "," : "", results[i].ssid, results[i].rssi,
 					       results[i].channel, security);
+			if (written < 0 || written >= static_cast<int>(sizeof(json)) - pos) {
+				// 缓冲区已满，停止添加更多网络
+				break;
+			}
 			pos += written;
 		}
 
