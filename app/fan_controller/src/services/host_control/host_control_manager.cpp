@@ -5,12 +5,22 @@
 #include "host_control_manager.hpp"
 
 #include <zephyr/sys/util.h>
+#include <zephyr/logging/log.h>
+
+#include "fan_controller.hpp"
+
+LOG_MODULE_REGISTER(host_control, LOG_LEVEL_INF);
 
 namespace fanctl {
 
-HostControlManager::HostControlManager(FanController &fan_controller)
-	: fan_controller_(fan_controller), alive_check_enabled_(false), timed_out_(false),
-	  timeout_ms_(5000U), last_alive_ms_(0)
+HostControlManager::HostControlManager(const FanControllerSharedState *shared_state,
+					       FanController *fan_controller)
+	: shared_state_(shared_state),
+	  alive_check_enabled_(false),
+	  timed_out_(false),
+	  timeout_ms_(5000U),
+	  last_alive_ms_(0),
+	  fan_controller_(fan_controller)
 {
 }
 
@@ -65,20 +75,32 @@ void HostControlManager::Tick()
 		return;
 	}
 
-	// 超时后将所有风扇PWM设为0（关闭风扇），但保持电源使能状态
-	for (size_t i = 0; i < kFanCount; ++i) {
-		FanState state = {};
-		fan_controller_.GetState(i, &state);
-		// 仅对非ADC模式的风扇应用超时保护
-		if (state.enabled && !state.use_adc_target) {
-			// 设置percent=0关闭风扇，但保持enabled=true
-			(void)fan_controller_.ConfigureFan(i, 0, true, state.use_adc_target, false);
-		}
-	}
+	HandleTimeout();
 
 	k_mutex_lock(&mutex_, K_FOREVER);
 	timed_out_ = true;
 	k_mutex_unlock(&mutex_);
+}
+
+void HostControlManager::HandleTimeout()
+{
+	// 超时后将所有风扇 PWM 设为 0（关闭风扇），但保持电源使能状态
+	// 从共享内存读取当前状态
+	for (size_t i = 0; i < kFanCount; ++i) {
+		const FanChannelSharedState *ch = &shared_state_->channels[i];
+		
+		// 原子读取状态
+		bool enabled = atomic_get(&ch->enabled) != 0;
+		bool use_adc_target = atomic_get(&ch->use_adc_target) != 0;
+		
+		// 仅对非 ADC 模式的风扇应用超时保护
+		if (enabled && !use_adc_target && fan_controller_ != nullptr) {
+			// 设置 percent=0 关闭风扇，但保持 enabled=true
+			(void)fan_controller_->ConfigureFan(i, 0, true, use_adc_target, false);
+		}
+	}
+
+	LOG_WRN("Host control timeout - fans set to 0%%");
 }
 
 void HostControlManager::GetSnapshot(HostControlSnapshot *snapshot) const

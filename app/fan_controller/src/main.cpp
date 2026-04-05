@@ -24,25 +24,30 @@ LOG_MODULE_REGISTER(fanctl_app, LOG_LEVEL_INF);
 namespace {
 
 fanctl::FanController g_fan_controller;
-fanctl::HostControlManager g_host_control(g_fan_controller);
+fanctl::HostControlManager g_host_control(g_fan_controller.GetSharedState(), &g_fan_controller);
 fanctl::WifiManager g_wifi_manager;
 fanctl::ServiceContext g_services = { &g_fan_controller, &g_wifi_manager, &g_host_control };
 fanctl::HttpServer g_http_server(g_services);
 fanctl::SshServer g_ssh_server(g_services);
 
-K_THREAD_STACK_DEFINE(g_telemetry_stack, fanctl::kTelemetryStackSize);
-struct k_thread g_telemetry_thread;
+// 状态同步线程 (10Hz - 将 WiFi 状态同步到控制循环)
+K_THREAD_STACK_DEFINE(g_status_sync_stack, fanctl::kStatusSyncStackSize);
+struct k_thread g_status_sync_thread;
 
-void TelemetryThread(void *, void *, void *)
+void StatusSyncThread(void *, void *, void *)
 {
 	while (true) {
 		fanctl::WifiSnapshot snapshot = {};
-
 		g_wifi_manager.RefreshRuntimeStatus();
 		g_wifi_manager.GetSnapshot(&snapshot);
-		g_fan_controller.UpdateTelemetry(snapshot.sta_connected, snapshot.ap_enabled);
+		
+		// 同步 WiFi 状态到控制循环 (通过原子变量)
+		g_fan_controller.SetWifiStatus(snapshot.sta_connected, snapshot.ap_enabled);
+		
+		// 主机控制心跳检测
 		g_host_control.Tick();
-		k_sleep(K_SECONDS(1));
+		
+		k_sleep(K_MSEC(100));
 	}
 }
 
@@ -66,7 +71,7 @@ int main()
 
 	g_fan_controller.LoadPersistedState();
 
-	rc = g_fan_controller.Init();
+	rc = g_fan_controller.InitHardware();
 	if (rc != 0) {
 		LOG_ERR("fan controller init failed: %d", rc);
 		return rc;
@@ -94,10 +99,14 @@ int main()
 
 	fanctl::shell_commands::Init(g_services);
 
-	k_thread_create(&g_telemetry_thread, g_telemetry_stack,
-			K_THREAD_STACK_SIZEOF(g_telemetry_stack), TelemetryThread, nullptr, nullptr,
-			nullptr, 5, 0, K_NO_WAIT);
-	k_thread_name_set(&g_telemetry_thread, "fanctl_telemetry");
+	// 启动 100Hz 控制循环
+	g_fan_controller.StartControlLoop();
+
+	// 启动状态同步线程
+	k_thread_create(&g_status_sync_thread, g_status_sync_stack,
+			K_THREAD_STACK_SIZEOF(g_status_sync_stack), StatusSyncThread, nullptr, nullptr,
+			nullptr, 6, 0, K_NO_WAIT);
+	k_thread_name_set(&g_status_sync_thread, "fanctl_sync");
 
 	g_http_server.Start();
 	g_ssh_server.Start();
@@ -105,7 +114,7 @@ int main()
 	fanctl::WifiSnapshot wifi = {};
 	g_wifi_manager.GetSnapshot(&wifi);
 
-	printk("Fan controller ready.\n");
+	printk("Fan controller ready (100Hz control loop).\n");
 	
 	// Show AP or STA info based on what's enabled
 	if (wifi.ap_enabled) {

@@ -76,6 +76,7 @@ target_sources(app PRIVATE
   src/cli/command_session.cpp
   src/services/fan/curve_profiles.cpp
   src/services/storage/settings_store.cpp
+  src/services/fan/fan_shared_state.cpp
   src/services/fan/fan_controller.cpp
   src/services/network/wifi_manager.cpp
   src/services/network/http/http_common.cpp

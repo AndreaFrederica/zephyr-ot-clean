@@ -14,6 +14,7 @@
 #include "core/common.hpp"
 #include "curve_profiles.hpp"
 #include "fan_controller.hpp"
+#include "fan_shared_state.hpp"
 #include "host_control_manager.hpp"
 #include "settings_store.hpp"
 #include "storage.hpp"
