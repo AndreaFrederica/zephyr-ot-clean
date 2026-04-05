@@ -60,6 +60,37 @@
 
       <section class="card">
         <div class="card-head">
+          <h2>NTP 时间同步</h2>
+          <span class="badge neutral">/api/ntp</span>
+        </div>
+        <label class="switch-row">
+          <input id="ntpEnabled" type="checkbox">
+          <span>启用 NTP 同步</span>
+        </label>
+        <label class="switch-row">
+          <input id="ntpUseDhcpServer" type="checkbox">
+          <span>优先使用 DHCP 下发的 NTP 服务器</span>
+        </label>
+        <label class="field">
+          <span>NTP 服务器列表（每行一个）</span>
+          <textarea id="ntpServers" class="editor editor-compact" spellcheck="false" placeholder="223.5.5.5&#10;114.114.114.114&#10;pool.ntp.org"></textarea>
+        </label>
+        <label class="field">
+          <span>端口</span>
+          <input id="ntpPort" type="number" min="1" max="65535" step="1" value="123">
+        </label>
+        <label class="field">
+          <span>同步周期（小时）</span>
+          <input id="ntpSyncIntervalHours" type="number" min="1" max="720" step="1" value="24">
+        </label>
+        <div class="actions">
+          <button id="loadNtpBtn" class="secondary" type="button">加载 NTP 配置</button>
+          <button id="saveNtpBtn" type="button">保存 NTP 配置</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
           <h2>串口命令</h2>
           <span class="badge neutral">UART Shell</span>
         </div>
@@ -72,112 +103,114 @@ fanctl ap off
 fanctl clearwifi</pre>
       </section>
 
-      <section class="card card-fan">
-        <div class="card-head">
-          <h2>风扇 1</h2>
-          <span id="fan1Badge" class="badge">--</span>
-        </div>
-        <p class="card-note">“应用风扇”只修改当前运行。“保存为开机默认”才会写入下次启动默认值。</p>
-        <label class="switch-row">
-          <input id="fan1Enable" type="checkbox">
-          <span>当前运行启用</span>
-          <strong id="fan1Percent" class="accent">手动 0%</strong>
-        </label>
-        <label class="switch-row">
-          <input id="fan1UseAdcTarget" type="checkbox">
-          <span>ADC 参与目标计算</span>
-          <strong id="fan1EffectivePercent" class="accent">0%</strong>
-        </label>
-        <label class="field">
-          <span>手动目标转速</span>
-          <input id="fan1TargetRpm" type="number" min="0" max="12000" step="50" value="0">
-        </label>
-        <div class="telemetry-row">
-          <span>ADC Raw</span>
-          <strong id="fan1AdcRaw">0</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>ADC</span>
-          <strong id="fan1Adc">0 mV</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>校正电压</span>
-          <strong id="fan1MappedVoltage">0 mV</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>目标百分比</span>
-          <strong id="fan1AdcTargetPercent">0%</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>PWM 输出</span>
-          <strong id="fan1PwmPercent">0%</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>目标转速</span>
-          <strong id="fan1TargetRpmValue">0 rpm</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>实际转速</span>
-          <strong id="fan1Rpm">0 rpm</strong>
-        </div>
-        <div class="actions">
-          <button id="saveFan1Btn" type="button">应用风扇 1</button>
-          <button id="saveFan1DefaultsBtn" class="secondary" type="button">保存为开机默认</button>
-        </div>
-      </section>
+      <section class="fan-row">
+        <section class="card card-fan">
+          <div class="card-head">
+            <h2>风扇 1</h2>
+            <span id="fan1Badge" class="badge">--</span>
+          </div>
+          <p class="card-note">“应用风扇”只修改当前运行。“保存为开机默认”才会写入下次启动默认值。</p>
+          <label class="switch-row">
+            <input id="fan1Enable" type="checkbox">
+            <span>当前运行启用</span>
+            <strong id="fan1Percent" class="accent">手动 0%</strong>
+          </label>
+          <label class="switch-row">
+            <input id="fan1UseAdcTarget" type="checkbox">
+            <span>ADC 参与目标计算</span>
+            <strong id="fan1EffectivePercent" class="accent">0%</strong>
+          </label>
+          <label class="field">
+            <span>手动目标转速</span>
+            <input id="fan1TargetRpm" type="number" min="0" max="12000" step="50" value="0">
+          </label>
+          <div class="telemetry-row">
+            <span>ADC Raw</span>
+            <strong id="fan1AdcRaw">0</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>ADC</span>
+            <strong id="fan1Adc">0 mV</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>校正电压</span>
+            <strong id="fan1MappedVoltage">0 mV</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>目标百分比</span>
+            <strong id="fan1AdcTargetPercent">0%</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>PWM 输出</span>
+            <strong id="fan1PwmPercent">0%</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>目标转速</span>
+            <strong id="fan1TargetRpmValue">0 rpm</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>实际转速</span>
+            <strong id="fan1Rpm">0 rpm</strong>
+          </div>
+          <div class="actions">
+            <button id="saveFan1Btn" type="button">应用风扇 1</button>
+            <button id="saveFan1DefaultsBtn" class="secondary" type="button">保存为开机默认</button>
+          </div>
+        </section>
 
-      <section class="card card-fan">
-        <div class="card-head">
-          <h2>风扇 2</h2>
-          <span id="fan2Badge" class="badge">--</span>
-        </div>
-        <p class="card-note">“应用风扇”只修改当前运行。“保存为开机默认”才会写入下次启动默认值。</p>
-        <label class="switch-row">
-          <input id="fan2Enable" type="checkbox">
-          <span>当前运行启用</span>
-          <strong id="fan2Percent" class="accent">手动 0%</strong>
-        </label>
-        <label class="switch-row">
-          <input id="fan2UseAdcTarget" type="checkbox">
-          <span>ADC 参与目标计算</span>
-          <strong id="fan2EffectivePercent" class="accent">0%</strong>
-        </label>
-        <label class="field">
-          <span>手动目标转速</span>
-          <input id="fan2TargetRpm" type="number" min="0" max="12000" step="50" value="0">
-        </label>
-        <div class="telemetry-row">
-          <span>ADC Raw</span>
-          <strong id="fan2AdcRaw">0</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>ADC</span>
-          <strong id="fan2Adc">0 mV</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>校正电压</span>
-          <strong id="fan2MappedVoltage">0 mV</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>目标百分比</span>
-          <strong id="fan2AdcTargetPercent">0%</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>PWM 输出</span>
-          <strong id="fan2PwmPercent">0%</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>目标转速</span>
-          <strong id="fan2TargetRpmValue">0 rpm</strong>
-        </div>
-        <div class="telemetry-row">
-          <span>实际转速</span>
-          <strong id="fan2Rpm">0 rpm</strong>
-        </div>
-        <div class="actions">
-          <button id="saveFan2Btn" type="button">应用风扇 2</button>
-          <button id="saveFan2DefaultsBtn" class="secondary" type="button">保存为开机默认</button>
-        </div>
+        <section class="card card-fan">
+          <div class="card-head">
+            <h2>风扇 2</h2>
+            <span id="fan2Badge" class="badge">--</span>
+          </div>
+          <p class="card-note">“应用风扇”只修改当前运行。“保存为开机默认”才会写入下次启动默认值。</p>
+          <label class="switch-row">
+            <input id="fan2Enable" type="checkbox">
+            <span>当前运行启用</span>
+            <strong id="fan2Percent" class="accent">手动 0%</strong>
+          </label>
+          <label class="switch-row">
+            <input id="fan2UseAdcTarget" type="checkbox">
+            <span>ADC 参与目标计算</span>
+            <strong id="fan2EffectivePercent" class="accent">0%</strong>
+          </label>
+          <label class="field">
+            <span>手动目标转速</span>
+            <input id="fan2TargetRpm" type="number" min="0" max="12000" step="50" value="0">
+          </label>
+          <div class="telemetry-row">
+            <span>ADC Raw</span>
+            <strong id="fan2AdcRaw">0</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>ADC</span>
+            <strong id="fan2Adc">0 mV</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>校正电压</span>
+            <strong id="fan2MappedVoltage">0 mV</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>目标百分比</span>
+            <strong id="fan2AdcTargetPercent">0%</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>PWM 输出</span>
+            <strong id="fan2PwmPercent">0%</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>目标转速</span>
+            <strong id="fan2TargetRpmValue">0 rpm</strong>
+          </div>
+          <div class="telemetry-row">
+            <span>实际转速</span>
+            <strong id="fan2Rpm">0 rpm</strong>
+          </div>
+          <div class="actions">
+            <button id="saveFan2Btn" type="button">应用风扇 2</button>
+            <button id="saveFan2DefaultsBtn" class="secondary" type="button">保存为开机默认</button>
+          </div>
+        </section>
       </section>
 
       <section class="card card-wide">

@@ -1,6 +1,12 @@
 {
   "enabled": true,
-  "server": "223.5.5.5",
+  "use_dhcp_server": true,
+  "servers": [
+    "223.5.5.5",
+    "114.114.114.114",
+    "120.25.115.20",
+    "pool.ntp.org"
+  ],
   "port": 123,
   "sync_interval_hours": 24
 }

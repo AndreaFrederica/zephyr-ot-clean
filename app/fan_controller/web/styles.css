@@ -106,6 +106,17 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.fan-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.card-fan {
+  min-width: 0;
+}
+
 .card-head {
   display: flex;
   justify-content: space-between;
@@ -235,6 +246,10 @@ pre {
   min-height: 300px;
 }
 
+.editor-compact {
+  min-height: 120px;
+}
+
 .file-list {
   display: grid;
   gap: 8px;
@@ -260,6 +275,10 @@ pre {
 
 @media (max-width: 840px) {
   .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .fan-row {
     grid-template-columns: 1fr;
   }
 

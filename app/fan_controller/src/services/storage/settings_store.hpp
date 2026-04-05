@@ -8,9 +8,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "common.hpp"
+#include "core/common.hpp"
 
 namespace fanctl::settings {
+
+constexpr size_t kMaxNtpServers = 6;
 
 struct AppConfig {
 	bool fan_enabled[kFanCount];
@@ -33,7 +35,9 @@ struct SshConfig {
 
 struct NtpConfig {
 	bool enabled;
-	char server[64];
+	bool use_dhcp_server;
+	char servers[kMaxNtpServers][64];
+	size_t server_count;
 	int port;
 	int sync_interval_hours;
 };
@@ -84,6 +88,7 @@ void SaveFanState(size_t index, bool enabled, uint8_t percent);
 int LoadFanAdcTargetMode(size_t index, bool *use_adc_target);
 void SaveFanAdcTargetMode(size_t index, bool use_adc_target);
 int SaveFanDefaults(size_t index, bool enabled, uint8_t percent, bool use_adc_target);
+int FactoryReset();
 
 } // namespace fanctl::settings
 

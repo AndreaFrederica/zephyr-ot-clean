@@ -28,6 +28,29 @@ namespace {
 
 WifiManager *g_instance = nullptr;
 
+bool TrySyncNtpAddress(const struct net_in_addr *addr, int port, struct sntp_time *out_time)
+{
+	if (addr == nullptr || out_time == nullptr) {
+		return false;
+	}
+
+	struct sntp_ctx ctx;
+	struct sockaddr_in sock_addr = {};
+	sock_addr.sin_family = AF_INET;
+	sock_addr.sin_port = htons(port);
+	sock_addr.sin_addr = *addr;
+
+	int rc = sntp_init(&ctx, (struct sockaddr *)&sock_addr, sizeof(sock_addr));
+	if (rc < 0) {
+		return false;
+	}
+
+	rc = sntp_query(&ctx, 10000, out_time);
+	sntp_close(&ctx);
+
+	return rc >= 0;
+}
+
 } // namespace
 
 WifiManager::WifiManager()
@@ -125,35 +148,42 @@ void WifiManager::EventHandler(struct net_mgmt_event_callback *cb, uint64_t mgmt
 	}
 }
 
-static const char *kNtpServers[] = {
-	"223.5.5.5",      // 阿里云
-	"114.114.114.114", // 114DNS
-	"120.25.115.20",  // 腾讯云
-	"pool.ntp.org",   // NTP Pool
-};
-
 bool WifiManager::TrySyncNtp(const char *server, int port, struct sntp_time *out_time)
 {
-	struct sntp_ctx ctx;
-	struct sockaddr_in addr = {};
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-
-	if (net_addr_pton(AF_INET, server, &addr.sin_addr) != 0) {
-		LOG_DBG("Invalid NTP server: %s", server);
+	if (server == nullptr || server[0] == '\0' || out_time == nullptr) {
 		return false;
 	}
 
-	int rc = sntp_init(&ctx, (struct sockaddr *)&addr, sizeof(addr));
-	if (rc < 0) {
-		LOG_DBG("SNTP init failed for %s: %d", server, rc);
+	char port_string[8];
+	(void)snprintf(port_string, sizeof(port_string), "%d", port);
+
+	struct zsock_addrinfo hints = {};
+	hints.ai_family = AF_INET;
+	hints.ai_socktype = SOCK_DGRAM;
+	hints.ai_protocol = IPPROTO_UDP;
+
+	struct zsock_addrinfo *results = nullptr;
+	int rc = zsock_getaddrinfo(server, port_string, &hints, &results);
+	if (rc != 0 || results == nullptr) {
+		LOG_DBG("DNS resolve failed for %s: %d", server, rc);
 		return false;
 	}
 
-	rc = sntp_query(&ctx, 10000, out_time);  // 10秒超时
-	sntp_close(&ctx);
+	bool success = false;
+	for (struct zsock_addrinfo *entry = results; entry != nullptr; entry = entry->ai_next) {
+		if (entry->ai_family != AF_INET || entry->ai_addrlen < sizeof(struct sockaddr_in)) {
+			continue;
+		}
 
-	return rc >= 0;
+		const struct sockaddr_in *addr = reinterpret_cast<const struct sockaddr_in *>(entry->ai_addr);
+		if (TrySyncNtpAddress(&addr->sin_addr, port, out_time)) {
+			success = true;
+			break;
+		}
+	}
+
+	zsock_freeaddrinfo(results);
+	return success;
 }
 
 void WifiManager::SyncTimeViaNtp()
@@ -180,25 +210,41 @@ void WifiManager::SyncTimeViaNtp()
 	struct sntp_time sntp_time = {};
 	bool synced = false;
 
-	// 首先尝试配置的 NTP 服务器
-	if (ntp_config.server[0] != '\0') {
-		LOG_INF("Trying primary NTP: %s:%d", ntp_config.server, ntp_config.port);
-		if (TrySyncNtp(ntp_config.server, ntp_config.port, &sntp_time)) {
-			synced = true;
-			LOG_INF("NTP sync success from: %s", ntp_config.server);
+	if (ntp_config.use_dhcp_server && sta_iface_ != nullptr) {
+#ifdef CONFIG_NET_DHCPV4_OPTION_NTP_SERVER
+		if (!net_ipv4_is_addr_unspecified(&sta_iface_->config.dhcpv4.ntp_addr)) {
+			char dhcp_ntp[NET_IPV4_ADDR_LEN];
+			if (net_addr_ntop(AF_INET, &sta_iface_->config.dhcpv4.ntp_addr, dhcp_ntp,
+					  sizeof(dhcp_ntp)) == nullptr) {
+				(void)snprintf(dhcp_ntp, sizeof(dhcp_ntp), "<invalid>");
+			}
+
+			LOG_INF("Trying DHCP NTP: %s:%d", dhcp_ntp, ntp_config.port);
+			if (TrySyncNtpAddress(&sta_iface_->config.dhcpv4.ntp_addr, ntp_config.port,
+					      &sntp_time)) {
+				synced = true;
+				LOG_INF("NTP sync success from DHCP server: %s", dhcp_ntp);
+			}
+		} else {
+			LOG_INF("DHCP did not provide an NTP server");
 		}
+#else
+		LOG_INF("DHCP NTP server option is not enabled in this build");
+#endif
 	}
 
-	// 失败后尝试备用服务器
 	if (!synced) {
-		for (size_t i = 0; i < ARRAY_SIZE(kNtpServers); ++i) {
-			LOG_INF("Trying backup NTP: %s", kNtpServers[i]);
-			if (TrySyncNtp(kNtpServers[i], 123, &sntp_time)) {
+		for (size_t i = 0; i < ntp_config.server_count; ++i) {
+			LOG_INF("Trying configured NTP %u/%u: %s:%d",
+				static_cast<unsigned int>(i + 1),
+				static_cast<unsigned int>(ntp_config.server_count),
+				ntp_config.servers[i], ntp_config.port);
+			if (TrySyncNtp(ntp_config.servers[i], ntp_config.port, &sntp_time)) {
 				synced = true;
-				LOG_INF("NTP sync success from: %s", kNtpServers[i]);
+				LOG_INF("NTP sync success from configured server: %s", ntp_config.servers[i]);
 				break;
 			}
-			k_sleep(K_MSEC(100));  // 短暂间隔再试
+			k_sleep(K_MSEC(100));
 		}
 	}
 
@@ -207,9 +253,16 @@ void WifiManager::SyncTimeViaNtp()
 		return;
 	}
 
-	// 转换为 Unix 时间戳 (SNTP 时间从 1900-01-01 开始，Unix 时间从 1970-01-01 开始)
-	time_t now = (time_t)(sntp_time.seconds - 2208988800U);
-	
+	struct timespec tspec = {};
+	tspec.tv_sec = static_cast<time_t>(sntp_time.seconds);
+	tspec.tv_nsec = static_cast<long>(((uint64_t)sntp_time.fraction * 1000000000ULL) >> 32);
+
+	if (clock_settime(CLOCK_REALTIME, &tspec) != 0) {
+		LOG_WRN("Failed to set system time: %d", errno);
+	}
+
+	time_t now = tspec.tv_sec;
+
 	// 转换为可读格式
 	struct tm *timeinfo = gmtime(&now);
 	if (timeinfo != nullptr) {

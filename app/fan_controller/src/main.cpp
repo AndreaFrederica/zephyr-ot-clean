@@ -6,12 +6,13 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 
-#include "common.hpp"
+#include "core/common.hpp"
 #include "curve_profiles.hpp"
 #include "fan_controller.hpp"
 #include "host_control_manager.hpp"
 #include "http_server.hpp"
 #include "settings_store.hpp"
+#include "core/service_context.hpp"
 #include "shell_commands.hpp"
 #include "ssh_server.hpp"
 #include "storage.hpp"
@@ -24,8 +25,9 @@ namespace {
 fanctl::FanController g_fan_controller;
 fanctl::HostControlManager g_host_control(g_fan_controller);
 fanctl::WifiManager g_wifi_manager;
-fanctl::HttpServer g_http_server(g_fan_controller, g_wifi_manager, g_host_control);
-fanctl::SshServer g_ssh_server(g_fan_controller, g_wifi_manager, g_host_control);
+fanctl::ServiceContext g_services = { &g_fan_controller, &g_wifi_manager, &g_host_control };
+fanctl::HttpServer g_http_server(g_services);
+fanctl::SshServer g_ssh_server(g_services);
 
 K_THREAD_STACK_DEFINE(g_telemetry_stack, fanctl::kTelemetryStackSize);
 struct k_thread g_telemetry_thread;
@@ -86,7 +88,7 @@ int main()
 		return rc;
 	}
 
-	fanctl::shell_commands::Init(g_fan_controller, g_wifi_manager, g_host_control);
+	fanctl::shell_commands::Init(g_services);
 
 	k_thread_create(&g_telemetry_thread, g_telemetry_stack,
 			K_THREAD_STACK_SIZEOF(g_telemetry_stack), TelemetryThread, nullptr, nullptr,

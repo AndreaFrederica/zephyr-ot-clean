@@ -68,17 +68,20 @@ add_custom_command(
 
 target_sources(app PRIVATE
   src/main.cpp
-  src/curve_profiles.cpp
-  src/settings_store.cpp
-  src/fan_controller.cpp
-  src/wifi_manager.cpp
-  src/http_server.cpp
-  src/shell_commands.cpp
-  src/line_editor.cpp
-  src/command_session.cpp
-  src/ssh_server.cpp
-  src/storage.cpp
-  src/host_control_manager.cpp
+  src/cli/cli_runtime.cpp
+  src/cli/shell_commands.cpp
+  src/cli/line_editor.cpp
+  src/cli/command_session.cpp
+  src/services/fan/curve_profiles.cpp
+  src/services/storage/settings_store.cpp
+  src/services/fan/fan_controller.cpp
+  src/services/network/wifi_manager.cpp
+  src/services/network/http/http_common.cpp
+  src/services/network/http/http_api.cpp
+  src/services/network/http/http_server.cpp
+  src/services/ssh/ssh_server.cpp
+  src/services/storage/storage.cpp
+  src/services/host_control/host_control_manager.cpp
   ${GENERATED_WEB_SOURCE}
   ${GENERATED_CURVE_SOURCE}
   ${GENERATED_CONFIG_SOURCE}
@@ -86,5 +89,14 @@ target_sources(app PRIVATE
 
 target_include_directories(app PRIVATE
   src
+  src/core
+  src/cli
+  src/services
+  src/services/fan
+  src/services/network
+  src/services/network/http
+  src/services/storage
+  src/services/ssh
+  src/services/host_control
   ${GENERATED_WEB_DIR}
 )

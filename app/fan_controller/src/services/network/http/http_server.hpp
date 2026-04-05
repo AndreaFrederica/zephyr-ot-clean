@@ -7,16 +7,17 @@
 
 #include <zephyr/kernel.h>
 
-#include "fan_controller.hpp"
-#include "host_control_manager.hpp"
-#include "wifi_manager.hpp"
+#include "core/service_context.hpp"
 
 namespace fanctl {
 
+class FanController;
+class HostControlManager;
+class WifiManager;
+
 class HttpServer {
 public:
-	HttpServer(FanController &fan_controller, WifiManager &wifi_manager,
-		   HostControlManager &host_control);
+	explicit HttpServer(const ServiceContext &services);
 
 	void Start();
 

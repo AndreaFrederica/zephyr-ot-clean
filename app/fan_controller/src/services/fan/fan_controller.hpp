@@ -12,7 +12,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 
-#include "common.hpp"
+#include "core/common.hpp"
 #include "curve_profiles.hpp"
 
 namespace fanctl {

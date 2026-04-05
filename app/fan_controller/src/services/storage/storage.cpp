@@ -14,7 +14,7 @@
 #include <zephyr/init.h>
 #include <zephyr/logging/log.h>
 
-#include "common.hpp"
+#include "core/common.hpp"
 #include "generated/web_assets.hpp"
 
 LOG_MODULE_REGISTER(fanctl_storage, LOG_LEVEL_INF);

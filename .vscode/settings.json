@@ -4,6 +4,7 @@
     "cmake.configureOnOpen": false,
     "cSpell.words": [
         "fanctl",
-        "printk"
+        "printk",
+        "SPIRAM"
     ]
 }

@@ -9,7 +9,7 @@
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/wifi_mgmt.h>
 
-#include "common.hpp"
+#include "core/common.hpp"
 #include "settings_store.hpp"
 
 // Forward declaration from zephyr/net/sntp.h

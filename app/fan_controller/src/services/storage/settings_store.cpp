@@ -14,6 +14,7 @@
 #include <zephyr/sys/util.h>
 
 #include "generated/config_assets.hpp"
+#include "generated/default_curve_assets.hpp"
 #include "storage.hpp"
 
 namespace fanctl::settings {
@@ -86,7 +87,7 @@ constexpr const char *kFieldDefinitionsJson = R"json({
 constexpr const char *kSshConfigJson = R"json({
   "enabled": true,
   "listen_port": 22,
-  "host_key_path": "/etc/ssh/ssh_host_ecdsa_key.der",
+  "host_key_path": "/etc/ssh/ssh_host_ecdsa_key.pem",
   "username": "root",
   "password": "123456",
   "allow_password_auth": true,
@@ -113,6 +114,7 @@ constexpr const char *kAuthorizedKeysTemplate =
 	"# Add one OpenSSH public key per line.\n"
 	"# Example:\n"
 	"# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... laptop\n";
+constexpr const char *kSettingsFileRelativePath = "/var/lib/fanctl/settings.bin";
 
 void SkipWhitespace(const char **cursor)
 {
@@ -226,6 +228,60 @@ bool ParseJsonIntAt(const char *value_pos, int *out)
 	return true;
 }
 
+bool ParseJsonStringArrayAt(const char *value_pos, char out[][64], size_t max_items, size_t *out_count)
+{
+	if (value_pos == nullptr || out == nullptr || out_count == nullptr) {
+		return false;
+	}
+
+	const char *cursor = value_pos;
+	SkipWhitespace(&cursor);
+	if (*cursor != '[') {
+		return false;
+	}
+
+	++cursor;
+	*out_count = 0U;
+
+	while (true) {
+		SkipWhitespace(&cursor);
+		if (*cursor == ']') {
+			++cursor;
+			return true;
+		}
+
+		if (*out_count >= max_items) {
+			return false;
+		}
+
+		if (!ParseJsonStringAt(cursor, out[*out_count], 64)) {
+			return false;
+		}
+		++(*out_count);
+
+		++cursor;
+		while (*cursor != '\0') {
+			if (*cursor == '"' && cursor[-1] != '\\') {
+				++cursor;
+				break;
+			}
+			++cursor;
+		}
+
+		SkipWhitespace(&cursor);
+		if (*cursor == ',') {
+			++cursor;
+			continue;
+		}
+		if (*cursor == ']') {
+			++cursor;
+			return true;
+		}
+
+		return false;
+	}
+}
+
 void EscapeJsonString(const char *src, char *dst, size_t dst_len)
 {
 	size_t out = 0U;
@@ -286,7 +342,7 @@ void FillSshDefaults(SshConfig *config)
 	config->enabled = true;
 	config->listen_port = 22;
 	(void)snprintf(config->host_key_path, sizeof(config->host_key_path),
-		       "/etc/ssh/ssh_host_ecdsa_key.der");
+		       "/etc/ssh/ssh_host_ecdsa_key.pem");
 	(void)snprintf(config->username, sizeof(config->username), "root");
 	(void)snprintf(config->password, sizeof(config->password), "123456");
 	config->allow_password_auth = true;
@@ -302,7 +358,12 @@ void FillNtpDefaults(NtpConfig *config)
 	}
 
 	config->enabled = true;
-	(void)snprintf(config->server, sizeof(config->server), "223.5.5.5");
+	config->use_dhcp_server = true;
+	config->server_count = 4U;
+	(void)snprintf(config->servers[0], sizeof(config->servers[0]), "223.5.5.5");
+	(void)snprintf(config->servers[1], sizeof(config->servers[1]), "114.114.114.114");
+	(void)snprintf(config->servers[2], sizeof(config->servers[2]), "120.25.115.20");
+	(void)snprintf(config->servers[3], sizeof(config->servers[3]), "pool.ntp.org");
 	config->port = 123;
 	config->sync_interval_hours = 24;
 }
@@ -387,21 +448,39 @@ int BuildNtpJson(const NtpConfig *config, char *json, size_t json_len)
 		return -EINVAL;
 	}
 
-	char server[128];
-
-	EscapeJsonString(config->server, server, sizeof(server));
-
+	size_t offset = 0U;
 	int written = snprintf(
 		json, json_len,
 		"{\n"
 		"  \"enabled\": %s,\n"
-		"  \"server\": \"%s\",\n"
+		"  \"use_dhcp_server\": %s,\n"
+		"  \"servers\": [",
+		config->enabled ? "true" : "false", config->use_dhcp_server ? "true" : "false");
+	if (written <= 0 || static_cast<size_t>(written) >= json_len) {
+		return -ENOSPC;
+	}
+	offset = static_cast<size_t>(written);
+
+	for (size_t i = 0; i < config->server_count; ++i) {
+		char server[128];
+		EscapeJsonString(config->servers[i], server, sizeof(server));
+		written = snprintf(json + offset, json_len - offset, "%s\"%s\"",
+				   i == 0U ? "" : ", ", server);
+		if (written <= 0 || static_cast<size_t>(written) >= json_len - offset) {
+			return -ENOSPC;
+		}
+		offset += static_cast<size_t>(written);
+	}
+
+	written = snprintf(
+		json + offset, json_len - offset,
+		"],\n"
 		"  \"port\": %d,\n"
 		"  \"sync_interval_hours\": %d\n"
 		"}\n",
-		config->enabled ? "true" : "false", server, config->port, config->sync_interval_hours);
+		config->port, config->sync_interval_hours);
 
-	return (written > 0 && static_cast<size_t>(written) < json_len) ? 0 : -ENOSPC;
+	return (written > 0 && static_cast<size_t>(written) < json_len - offset) ? 0 : -ENOSPC;
 }
 
 int BuildWifiJson(const WifiConfig *config, char *json, size_t json_len)
@@ -586,10 +665,21 @@ int ParseNtpJson(const char *json, NtpConfig *config)
 		return -EINVAL;
 	}
 
-	if (!FindJsonKey(json, "server", &value) ||
-	    !ParseJsonStringAt(value, parsed.server, sizeof(parsed.server)) ||
-	    parsed.server[0] == '\0') {
+	if (FindJsonKey(json, "use_dhcp_server", &value) &&
+	    !ParseJsonBoolAt(value, &parsed.use_dhcp_server)) {
 		return -EINVAL;
+	}
+
+	if (FindJsonKey(json, "servers", &value)) {
+		if (!ParseJsonStringArrayAt(value, parsed.servers, ARRAY_SIZE(parsed.servers),
+					    &parsed.server_count)) {
+			return -EINVAL;
+		}
+	} else if (FindJsonKey(json, "server", &value)) {
+		if (!ParseJsonStringAt(value, parsed.servers[0], sizeof(parsed.servers[0]))) {
+			return -EINVAL;
+		}
+		parsed.server_count = 1U;
 	}
 
 	if (!FindJsonKey(json, "port", &value) || !ParseJsonIntAt(value, &parsed.port) ||
@@ -600,6 +690,10 @@ int ParseNtpJson(const char *json, NtpConfig *config)
 	if (!FindJsonKey(json, "sync_interval_hours", &value) ||
 	    !ParseJsonIntAt(value, &parsed.sync_interval_hours) ||
 	    parsed.sync_interval_hours < 1 || parsed.sync_interval_hours > 720) {
+		return -EINVAL;
+	}
+
+	if (!parsed.use_dhcp_server && parsed.server_count == 0U) {
 		return -EINVAL;
 	}
 
@@ -807,7 +901,7 @@ int SaveSshConfig(const SshConfig *config)
 
 int SaveNtpConfig(const NtpConfig *config)
 {
-	char json[256];
+	char json[768];
 	int rc = BuildNtpJson(config, json, sizeof(json));
 
 	if (rc != 0) {
@@ -1035,7 +1129,7 @@ int LoadNtpConfig(NtpConfig *config)
 		return -EINVAL;
 	}
 
-	char json[256];
+	char json[768];
 	size_t json_len = 0U;
 	int rc = storage::ReadTextFile(kNtpConfigRelativePath, json, sizeof(json), &json_len);
 	if (rc != 0) {
@@ -1056,7 +1150,7 @@ int WriteNtpConfigJson(const char *json, size_t json_len)
 		return -EINVAL;
 	}
 
-	char buffer[256];
+	char buffer[768];
 	if (json_len >= sizeof(buffer)) {
 		return -ENOSPC;
 	}
@@ -1210,6 +1304,80 @@ int SaveFanDefaults(size_t index, bool enabled, uint8_t percent, bool use_adc_ta
 	config.fan_percent[index] = MIN(percent, 100U);
 	config.fan_use_adc_target[index] = use_adc_target;
 	return SaveConfig(&config);
+}
+
+int FactoryReset()
+{
+	SshConfig previous_ssh = {};
+	(void)LoadSshConfig(&previous_ssh);
+
+	AppConfig app_config = {};
+	FillDefaults(&app_config);
+	int rc = SaveConfig(&app_config);
+	if (rc != 0) {
+		return rc;
+	}
+
+	SshConfig ssh_config = {};
+	FillSshDefaults(&ssh_config);
+	rc = SaveSshConfig(&ssh_config);
+	if (rc != 0) {
+		return rc;
+	}
+
+	NtpConfig ntp_config = {};
+	FillNtpDefaults(&ntp_config);
+	rc = SaveNtpConfig(&ntp_config);
+	if (rc != 0) {
+		return rc;
+	}
+
+	WifiConfig wifi_config = {};
+	FillWifiDefaults(&wifi_config);
+	rc = SaveWifiConfig(&wifi_config);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = storage::WriteTextFile(kFieldDefinitionsRelativePath, kFieldDefinitionsJson,
+				    strlen(kFieldDefinitionsJson));
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = storage::WriteTextFile(kAuthorizedKeysRelativePath, kAuthorizedKeysTemplate,
+				    strlen(kAuthorizedKeysTemplate));
+	if (rc != 0) {
+		return rc;
+	}
+
+	for (size_t i = 0; i < curves::kDefaultCurveAssetCount; ++i) {
+		rc = storage::WriteTextFile(curves::kDefaultCurveAssets[i].path,
+					    reinterpret_cast<const char *>(curves::kDefaultCurveAssets[i].data),
+					    curves::kDefaultCurveAssets[i].size);
+		if (rc != 0) {
+			return rc;
+		}
+	}
+
+	if (previous_ssh.host_key_path[0] != '\0') {
+		rc = storage::DeletePath(previous_ssh.host_key_path);
+		if (rc != 0 && rc != -ENOENT) {
+			return rc;
+		}
+	}
+
+	rc = storage::DeletePath(ssh_config.host_key_path);
+	if (rc != 0 && rc != -ENOENT) {
+		return rc;
+	}
+
+	rc = storage::DeletePath(kSettingsFileRelativePath);
+	if (rc != 0 && rc != -ENOENT) {
+		return rc;
+	}
+
+	return 0;
 }
 
 } // namespace fanctl::settings

@@ -7,10 +7,8 @@
 
 #include <stddef.h>
 
-#include "fan_controller.hpp"
-#include "host_control_manager.hpp"
 #include "line_editor.hpp"
-#include "wifi_manager.hpp"
+#include "core/service_context.hpp"
 
 namespace fanctl {
 
@@ -23,8 +21,7 @@ struct CommandSessionResult {
 
 class CommandSession {
 public:
-	CommandSession(FanController &fan_controller, WifiManager &wifi_manager,
-		       HostControlManager &host_control);
+	explicit CommandSession(const ServiceContext &services);
 
 	void Reset();
 	void BuildPrompt(char *buffer, size_t buffer_len) const;
@@ -40,7 +37,8 @@ private:
 	int Tokenize(char *line, char *argv[], size_t argv_len) const;
 	int JoinTokens(char *buffer, size_t buffer_len, char *argv[], int argc, int start) const;
 	int ApplyConfigFromStore() const;
-	int HandleFanctl(char *argv[], int argc, SessionWriteFn writer, void *ctx);
+	int HandleFanctl(char *argv[], int argc, SessionWriteFn writer, void *ctx,
+			 CommandSessionResult *result);
 	int HandleShow(char *argv[], int argc, SessionWriteFn writer, void *ctx) const;
 	int HandleEdit(char *argv[], int argc, SessionWriteFn writer, void *ctx);
 	int HandleLs(const char *path, SessionWriteFn writer, void *ctx) const;
@@ -51,9 +49,7 @@ private:
 	int HandleWriteFile(char *argv[], int argc, SessionWriteFn writer, void *ctx);
 	void EmitHelp(SessionWriteFn writer, void *ctx) const;
 
-	FanController &fan_controller_;
-	WifiManager &wifi_manager_;
-	HostControlManager &host_control_;
+	ServiceContext services_;
 	LineEditor editor_;
 	char cwd_[128];
 };

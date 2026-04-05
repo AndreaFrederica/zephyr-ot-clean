@@ -6,6 +6,13 @@ const dom = {
   ssid: document.getElementById("ssid"),
   psk: document.getElementById("psk"),
   saveWifiBtn: document.getElementById("saveWifiBtn"),
+  ntpEnabled: document.getElementById("ntpEnabled"),
+  ntpUseDhcpServer: document.getElementById("ntpUseDhcpServer"),
+  ntpServers: document.getElementById("ntpServers"),
+  ntpPort: document.getElementById("ntpPort"),
+  ntpSyncIntervalHours: document.getElementById("ntpSyncIntervalHours"),
+  loadNtpBtn: document.getElementById("loadNtpBtn"),
+  saveNtpBtn: document.getElementById("saveNtpBtn"),
   refreshBtn: document.getElementById("refreshBtn"),
   refreshState: document.getElementById("refreshState"),
   lastRefresh: document.getElementById("lastRefresh"),
@@ -235,6 +242,69 @@ async function saveWifi() {
   window.alert("Wi‑Fi 凭据已保存，设备开始尝试联网。");
 }
 
+async function loadNtpConfig() {
+  const config = await requestJson("/api/ntp");
+  dom.ntpEnabled.checked = Boolean(config.enabled);
+  dom.ntpUseDhcpServer.checked = Boolean(config.use_dhcp_server ?? true);
+  dom.ntpServers.value = Array.isArray(config.servers)
+    ? config.servers.join("\n")
+    : config.server
+      ? `${config.server}\n`
+      : "";
+  dom.ntpPort.value = String(config.port ?? 123);
+  dom.ntpSyncIntervalHours.value = String(config.sync_interval_hours ?? 24);
+}
+
+async function saveNtpConfig() {
+  const port = Number(dom.ntpPort.value);
+  const syncIntervalHours = Number(dom.ntpSyncIntervalHours.value);
+  const servers = dom.ntpServers.value
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    window.alert("请输入有效的 NTP 端口。");
+    return;
+  }
+
+  if (!Number.isInteger(syncIntervalHours) || syncIntervalHours < 1 || syncIntervalHours > 720) {
+    window.alert("请输入 1 到 720 小时之间的同步周期。");
+    return;
+  }
+
+  if (!dom.ntpUseDhcpServer.checked && servers.length === 0) {
+    window.alert("关闭 DHCP NTP 时，至少需要配置一个 NTP 服务器。");
+    return;
+  }
+
+  const saved = await requestJson("/api/ntp", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      enabled: dom.ntpEnabled.checked,
+      use_dhcp_server: dom.ntpUseDhcpServer.checked,
+      servers,
+      port,
+      sync_interval_hours: syncIntervalHours,
+    }),
+  });
+
+  dom.ntpEnabled.checked = Boolean(saved.enabled);
+  dom.ntpUseDhcpServer.checked = Boolean(saved.use_dhcp_server ?? true);
+  dom.ntpServers.value = Array.isArray(saved.servers)
+    ? saved.servers.join("\n")
+    : saved.server
+      ? `${saved.server}\n`
+      : "";
+  dom.ntpPort.value = String(saved.port ?? port);
+  dom.ntpSyncIntervalHours.value = String(saved.sync_interval_hours ?? syncIntervalHours);
+  await browseFs(dom.fsPath.value || "/");
+  window.alert("NTP 配置已保存。");
+}
+
 async function loadConfig() {
   dom.configEditor.value = await requestText("/api/config");
 }
@@ -364,6 +434,14 @@ dom.saveWifiBtn.addEventListener("click", () => {
   void saveWifi().catch((error) => window.alert(error.message));
 });
 
+dom.loadNtpBtn.addEventListener("click", () => {
+  void loadNtpConfig().catch((error) => window.alert(error.message));
+});
+
+dom.saveNtpBtn.addEventListener("click", () => {
+  void saveNtpConfig().catch((error) => window.alert(error.message));
+});
+
 dom.refreshBtn.addEventListener("click", () => {
   void refreshStatus().catch((error) => window.alert(error.message));
 });
@@ -401,6 +479,7 @@ dom.deleteFileBtn.addEventListener("click", () => {
 });
 
 await refreshStatus();
+await loadNtpConfig();
 await loadConfig();
 await loadFieldDefinitions();
 await browseFs("/");

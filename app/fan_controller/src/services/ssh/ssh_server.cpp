@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/logging/log.h>
@@ -19,7 +20,7 @@
 #include <wolfssl/wolfcrypt/random.h>
 
 #include "command_session.hpp"
-#include "common.hpp"
+#include "core/common.hpp"
 #include "storage.hpp"
 
 LOG_MODULE_REGISTER(fanctl_ssh, LOG_LEVEL_INF);
@@ -30,11 +31,12 @@ namespace {
 
 K_THREAD_STACK_DEFINE(g_ssh_server_stack, kSshStackSize);
 
+constexpr const char *kPemBegin = "-----BEGIN EC PRIVATE KEY-----\n";
+constexpr const char *kPemEnd = "-----END EC PRIVATE KEY-----\n";
+
 struct ConnectionContext {
-	explicit ConnectionContext(FanController &fan_controller, WifiManager &wifi_manager,
-				   HostControlManager &host_control,
-				   const settings::SshConfig &ssh_config)
-		: session(fan_controller, wifi_manager, host_control), config(ssh_config),
+	explicit ConnectionContext(const ServiceContext &services, const settings::SshConfig &ssh_config)
+		: session(services), config(ssh_config),
 		  shell_requested(false), exec_requested(false), reboot_requested(false)
 	{
 		exec_command[0] = '\0';
@@ -287,10 +289,9 @@ int ExecRequestCallback(WOLFSSH_CHANNEL *channel, void *ctx)
 
 } // namespace
 
-SshServer::SshServer(FanController &fan_controller, WifiManager &wifi_manager,
-			     HostControlManager &host_control)
-	: fan_controller_(fan_controller), wifi_manager_(wifi_manager), host_control_(host_control),
-	  config_{}, ctx_(nullptr), enabled_(false)
+SshServer::SshServer(const ServiceContext &services)
+	: fan_controller_(*services.fan_controller), wifi_manager_(*services.wifi_manager),
+	  host_control_(*services.host_control), config_{}, ctx_(nullptr), enabled_(false)
 {
 }
 
@@ -305,33 +306,113 @@ int SshServer::EnsureHostKey()
 
 	WC_RNG rng;
 	ecc_key key;
-	byte der[512];
+	byte *der = nullptr;
+	byte *base64 = nullptr;
+	char *pem = nullptr;
 
 	int rc = wc_InitRng(&rng);
 	if (rc != 0) {
+		LOG_ERR("ssh rng init failed: %d", rc);
 		return -EIO;
 	}
 
 	rc = wc_ecc_init(&key);
 	if (rc != 0) {
+		LOG_ERR("ssh ecc init failed: %d", rc);
 		wc_FreeRng(&rng);
 		return -EIO;
 	}
 
 	rc = wc_ecc_make_key_ex(&rng, 32, &key, ECC_SECP256R1);
-	if (rc == 0) {
-		rc = wc_EccKeyToDer(&key, der, sizeof(der));
+	if (rc != 0) {
+		wc_ecc_free(&key);
+		wc_FreeRng(&rng);
+		LOG_ERR("ssh host key generation failed: %d", rc);
+		return -EIO;
 	}
+
+	int der_len = wc_EccPrivateKeyToDer(&key, nullptr, 0);
+	if (der_len <= 0) {
+		wc_ecc_free(&key);
+		wc_FreeRng(&rng);
+		LOG_ERR("ssh host key der size failed: %d", der_len);
+		return -EIO;
+	}
+
+	der = static_cast<byte *>(malloc(static_cast<size_t>(der_len)));
+	if (der == nullptr) {
+		wc_ecc_free(&key);
+		wc_FreeRng(&rng);
+		return -ENOMEM;
+	}
+
+	rc = wc_EccPrivateKeyToDer(&key, der, static_cast<word32>(der_len));
 
 	wc_ecc_free(&key);
 	wc_FreeRng(&rng);
 
 	if (rc <= 0) {
+		free(der);
+		LOG_ERR("ssh host key generation failed: %d", rc);
 		return -EIO;
 	}
 
-	return storage::WriteTextFile(config_.host_key_path, reinterpret_cast<const char *>(der),
-				      static_cast<size_t>(rc));
+	word32 base64_len = static_cast<word32>(((static_cast<word32>(rc) + 2U) / 3U) * 4U + 4U);
+	base64 = static_cast<byte *>(malloc(base64_len));
+	if (base64 == nullptr) {
+		free(der);
+		return -ENOMEM;
+	}
+
+	rc = Base64_Encode_NoNl(der, static_cast<word32>(rc), base64, &base64_len);
+	free(der);
+	if (rc != 0) {
+		free(base64);
+		LOG_ERR("ssh host key base64 encode failed: %d", rc);
+		return -EIO;
+	}
+
+	size_t pem_capacity = strlen(kPemBegin) + strlen(kPemEnd) + static_cast<size_t>(base64_len) +
+			      static_cast<size_t>((base64_len + 63U) / 64U) + 1U;
+	pem = static_cast<char *>(malloc(pem_capacity));
+	if (pem == nullptr) {
+		free(base64);
+		return -ENOMEM;
+	}
+
+	size_t offset = 0U;
+	int written = snprintf(pem + offset, pem_capacity - offset, "%s", kPemBegin);
+	if (written <= 0 || static_cast<size_t>(written) >= pem_capacity - offset) {
+		free(base64);
+		free(pem);
+		return -ENOSPC;
+	}
+	offset += static_cast<size_t>(written);
+
+	for (word32 i = 0; i < base64_len; i += 64U) {
+		word32 chunk_len = MIN(base64_len - i, 64U);
+		if (offset + chunk_len + 1U >= pem_capacity) {
+			free(base64);
+			free(pem);
+			return -ENOSPC;
+		}
+
+		memcpy(pem + offset, base64 + i, chunk_len);
+		offset += chunk_len;
+		pem[offset++] = '\n';
+	}
+	free(base64);
+
+	written = snprintf(pem + offset, pem_capacity - offset, "%s", kPemEnd);
+	if (written <= 0 || static_cast<size_t>(written) >= pem_capacity - offset) {
+		free(pem);
+		return -ENOSPC;
+	}
+	offset += static_cast<size_t>(written);
+
+	rc = storage::WriteTextFile(config_.host_key_path, pem, offset);
+	free(pem);
+	return rc;
 }
 
 int SshServer::SetupContext()
@@ -340,7 +421,9 @@ int SshServer::SetupContext()
 		return 0;
 	}
 
-	if (wolfSSH_Init() != WS_SUCCESS) {
+	int ws_rc = wolfSSH_Init();
+	if (ws_rc != WS_SUCCESS) {
+		LOG_ERR("wolfSSH_Init failed: %d", ws_rc);
 		return -EIO;
 	}
 
@@ -356,20 +439,55 @@ int SshServer::SetupContext()
 	(void)wolfSSH_CTX_SetBanner(ctx_, "ESP32-S3 fan controller SSH service\r\n");
 	(void)wolfSSH_CTX_SetWindowPacketSize(ctx_, DEFAULT_WINDOW_SZ, DEFAULT_MAX_PACKET_SZ);
 
-	char host_key[1024];
-	size_t host_key_len = 0U;
-	int rc = storage::ReadTextFile(config_.host_key_path, host_key, sizeof(host_key), &host_key_len);
-	if (rc != 0) {
-		return rc;
+	for (int attempt = 0; attempt < 2; ++attempt) {
+		char host_key[1024];
+		byte host_key_der[512];
+		size_t host_key_len = 0U;
+		int rc = storage::ReadTextFile(config_.host_key_path, host_key, sizeof(host_key),
+					       &host_key_len);
+		if (rc != 0) {
+			LOG_ERR("ssh host key read failed: %d", rc);
+			wolfSSH_CTX_free(ctx_);
+			ctx_ = nullptr;
+			return rc;
+		}
+
+		int der_len = wc_KeyPemToDer(reinterpret_cast<const unsigned char *>(host_key),
+						    static_cast<int>(host_key_len), host_key_der,
+						    static_cast<int>(sizeof(host_key_der)), nullptr);
+		if (der_len <= 0) {
+			ws_rc = WS_BAD_FILE_E;
+			LOG_WRN("ssh host key pem decode failed: %d (len=%u, attempt=%d)", der_len,
+				static_cast<unsigned int>(host_key_len), attempt + 1);
+		} else {
+			ws_rc = wolfSSH_CTX_UsePrivateKey_buffer(ctx_, host_key_der,
+							 static_cast<word32>(der_len),
+							 WOLFSSH_FORMAT_ASN1);
+		}
+		if (ws_rc == WS_SUCCESS) {
+			return 0;
+		}
+
+		if (der_len > 0) {
+			LOG_WRN("ssh host key load failed: %d (der_len=%u, attempt=%d)", ws_rc,
+				static_cast<unsigned int>(der_len), attempt + 1);
+		}
+		if (attempt == 0) {
+			(void)storage::DeletePath(config_.host_key_path);
+			rc = EnsureHostKey();
+			if (rc != 0) {
+				LOG_ERR("ssh host key regeneration failed: %d", rc);
+				wolfSSH_CTX_free(ctx_);
+				ctx_ = nullptr;
+				return rc;
+			}
+			continue;
+		}
 	}
 
-	if (wolfSSH_CTX_UsePrivateKey_buffer(ctx_, reinterpret_cast<const byte *>(host_key),
-					     static_cast<word32>(host_key_len),
-					     WOLFSSH_FORMAT_ASN1) < 0) {
-		return -EIO;
-	}
-
-	return 0;
+	wolfSSH_CTX_free(ctx_);
+	ctx_ = nullptr;
+	return -EIO;
 }
 
 int SshServer::Init()
@@ -379,6 +497,9 @@ int SshServer::Init()
 		LOG_ERR("ssh config load failed: %d", rc);
 		return rc;
 	}
+
+	(void)snprintf(config_.host_key_path, sizeof(config_.host_key_path),
+		       "/etc/ssh/ssh_host_ecdsa_key.pem");
 
 	enabled_ = config_.enabled;
 	if (!enabled_) {
@@ -479,7 +600,8 @@ void SshServer::Run()
 
 int SshServer::HandleClient(int client)
 {
-	ConnectionContext connection(fan_controller_, wifi_manager_, host_control_, config_);
+	ServiceContext services = { &fan_controller_, &wifi_manager_, &host_control_ };
+	ConnectionContext connection(services, config_);
 	WOLFSSH *ssh = wolfSSH_new(ctx_);
 	if (ssh == nullptr) {
 		return -ENOMEM;

@@ -89,19 +89,26 @@
 ### 串口 Shell
 
 波特率 115200，基本命令：
-```
-fanctl status     # 查看风扇状态
-fanctl set 0 50   # 设置风扇1转速为50%
-fanctl set 1 75   # 设置风扇2转速为75%
+```shell
+fanctl status             # 查看风扇状态
+fanctl set 1 50 on        # 运行时设置风扇1为 50%
+fanctl set 2 75 off       # 运行时设置风扇2为 75%，并关闭输出
+show all                  # 查看系统、网络、存储、SSH、NTP、风扇等状态
+show system
+show wifi
+show storage
+cf                        # 查看文件系统容量/剩余空间
+duf                       # cf 的别名
 
 # 文件系统命令
-cd /cfg           # 切换目录
-pwd               # 显示当前目录
-ls                # 列出文件
-ls /cfg           # 列出指定目录
-cat config.json   # 查看文件内容
-mkdir test        # 创建目录
-rm file.txt       # 删除文件
+cd /etc/fanctl              # 切换目录
+pwd                         # 显示当前目录
+ls                          # 列出文件
+ls /etc/fanctl/curves       # 列出指定目录
+cat ./config.json           # 查看文件内容
+mkdir test                  # 创建目录
+touch note.txt              # 创建空文件
+rm file.txt                 # 删除文件
 writefile config.json {"key":"value"}  # 写入文件
 
 # 编辑器命令
@@ -115,8 +122,10 @@ edit quit              # 退出
 ### SSH 访问（如果启用）
 
 ```bash
-ssh root@192.168.4.1 -p 2222
+ssh root@192.168.4.1 -p 22
 ```
+
+默认用户名和密码见 [`config/ssh_config.json`](./config/ssh_config.json)。
 
 ## WiFi 配置
 
@@ -182,15 +191,13 @@ curl -X POST http://192.168.4.1/api/wifi -d "ssid=MyWiFi&psk=password"
 
 ### AP 模式配置
 
-在配置文件 `/etc/fanctl/config.json` 中可设置 AP 模式：
+AP/STA 参数保存在 `/etc/fanctl/wifi.json`：
 
 ```json
 {
-  "wifi": {
-    "sta_ssid": "",
-    "sta_psk": "",
-    "ap_enabled": true
-  }
+  "sta_ssid": "",
+  "sta_psk": "",
+  "ap_enabled": true
 }
 ```
 
@@ -200,27 +207,71 @@ curl -X POST http://192.168.4.1/api/wifi -d "ssid=MyWiFi&psk=password"
 ## 配置文件
 
 - **应用配置**: `/etc/fanctl/config.json`
+- **字段定义**: `/etc/fanctl/config.fields.json`
+- **WiFi 配置**: `/etc/fanctl/wifi.json`
 - **NTP 配置**: `/etc/fanctl/ntp.json`
-- **校准曲线**: `/cfg/adc_to_voltage.json`, `/cfg/voltage_to_percent.json`, `/cfg/percent_to_pwm.json`, `/cfg/percent_to_rpm.json`
+- **校准曲线**: `/etc/fanctl/curves/adc_to_voltage.json`, `/etc/fanctl/curves/voltage_to_percent.json`, `/etc/fanctl/curves/percent_to_pwm.json`, `/etc/fanctl/curves/percent_to_rpm.json`
 - **SSH 配置**: `/etc/ssh/sshd_config.json`
+- **SSH 主机密钥**: `/etc/ssh/ssh_host_ecdsa_key.der`
 - **授权密钥**: `/root/.ssh/authorized_keys`
+
+## 恢复出厂设置
+
+通过串口 Shell 或 SSH 执行：
+
+```shell
+fanctl factoryreset confirm
+```
+
+执行后会：
+
+- 恢复默认应用配置、WiFi 配置、NTP 配置、SSH 配置
+- 恢复默认风扇曲线文件
+- 清空 `authorized_keys`
+- 删除运行时生成的 SSH host key
+- 清理设置存储并自动重启设备
+
+该命令必须带 `confirm`，否则只会提示警告，不会真的执行。
 
 ## 编译和烧录
 
 ### 使用 Pixi（推荐）
 
 ```bash
-# 编译
-pixi run fan_controller
+# 增量编译
+pixi run fan_controller_build
 
-# 烧录
+# 重新配置并完整编译
+pixi run fan_controller_config
+
+# 清理 build 目录
+pixi run fan_controller_clean
+
+# 擦除整片 Flash
+pixi run fan_controller_erase
+
+# 烧录当前镜像
 pixi run fan_controller_flash
 
-# 编译并烧录
+# 增量编译并烧录
 pixi run fan_controller_deploy
 
 # 完整重新配置并烧录
 pixi run fan_controller_deploy_clean
+```
+
+兼容别名：
+
+```bash
+pixi run fan_controller      # 等价于 fan_controller_build
+pixi run fan_controller_c    # 等价于 fan_controller_config
+```
+
+默认串口为 `COM9`。如需修改：
+
+```powershell
+$env:FANCTL_PORT = "COM7"
+pixi run fan_controller_deploy
 ```
 
 ### 使用 West
@@ -229,12 +280,12 @@ pixi run fan_controller_deploy_clean
 # 编译
 west build -b esp32s3_fan_controller/esp32s3/procpu app/fan_controller -d build_fan_controller -- -DBOARD_ROOT=%PIXI_PROJECT_ROOT%
 
-# 烧录
-west flash -d build_fan_controller
-
 # 或使用 esptool
-esptool --chip esp32s3 --port COMx --baud 921600 write_flash 0x0 build_fan_controller/zephyr/zephyr.bin
+esptool --chip esp32s3 --port COMx --baud 921600 erase-flash
+esptool --chip esp32s3 --port COMx --baud 921600 --before default-reset --after hard-reset write-flash -u --flash-mode dio --flash-freq 80m --flash-size 16MB 0x0 build_fan_controller/zephyr/zephyr.bin
 ```
+
+当前工程更推荐使用 `pixi` 任务或直接 `esptool` 烧录；不要依赖旧的 `west flash` 工作流。
 
 ## 硬件连接图
 
