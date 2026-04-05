@@ -1,0 +1,3 @@
+[submodule "modules/lib/kilo"]
+	path = modules/lib/kilo
+	url = https://github.com/AndreaFrederica/kilo.git

@@ -29,6 +29,7 @@ public:
 
 private:
 	static void ThreadEntry(void *ctx, void *unused1, void *unused2);
+	static void ClientThreadEntry(void *ctx, void *unused1, void *unused2);
 	void Run();
 	int EnsureHostKey();
 	int SetupContext();

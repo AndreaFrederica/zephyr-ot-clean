@@ -5,6 +5,7 @@
 #include "ssh_server.hpp"
 
 #include <errno.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include <wolfssl/wolfcrypt/ecc.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 #include <wolfssl/wolfcrypt/random.h>
+#include <wolfssh/error.h>
 
 #include "command_session.hpp"
 #include "core/common.hpp"
@@ -30,7 +32,24 @@ namespace fanctl {
 
 namespace {
 
-K_THREAD_STACK_DEFINE(g_ssh_server_stack, kSshStackSize);
+constexpr int kSshListenerStackSize = 4096;
+K_THREAD_STACK_DEFINE(g_ssh_server_stack, kSshListenerStackSize);
+constexpr size_t kSshWorkerCount = 1U;
+constexpr int kSshKeepaliveIdleSeconds = 60;
+constexpr int kSshKeepaliveIntervalSeconds = 15;
+constexpr int kSshKeepaliveProbeCount = 3;
+K_THREAD_STACK_ARRAY_DEFINE(g_ssh_worker_stacks, kSshWorkerCount, kSshStackSize);
+K_SEM_DEFINE(g_ssh_worker_sem, kSshWorkerCount, kSshWorkerCount);
+K_MUTEX_DEFINE(g_ssh_worker_lock);
+
+struct SshWorkerSlot {
+	k_thread thread;
+	bool busy;
+	class SshServer *server;
+	int client;
+};
+
+SshWorkerSlot g_ssh_worker_slots[kSshWorkerCount] = {};
 
 constexpr const char *kPemBegin = "-----BEGIN PRIVATE KEY-----\n";
 constexpr const char *kPemEnd = "-----END PRIVATE KEY-----\n";
@@ -41,6 +60,7 @@ struct ConnectionContext {
 		  shell_requested(false), exec_requested(false), reboot_requested(false)
 	{
 		exec_command[0] = '\0';
+		history_count = 0U;
 	}
 
 	CommandSession session;
@@ -49,6 +69,8 @@ struct ConnectionContext {
 	bool exec_requested;
 	bool reboot_requested;
 	char exec_command[256];
+	char history[16][512];
+	size_t history_count;
 };
 
 const char *AuthTypeName(byte auth_type)
@@ -88,13 +110,132 @@ void SessionWriter(void *ctx, const char *text, size_t len)
 	(void)SendStreamAll(static_cast<WOLFSSH *>(ctx), text, len);
 }
 
-int ReadCommandLine(WOLFSSH *ssh, char *buffer, size_t buffer_len, CommandSession *session)
+int SessionReadChar(void *ctx)
 {
-	if (ssh == nullptr || buffer == nullptr || buffer_len < 2U) {
+	if (ctx == nullptr) {
+		return -EINVAL;
+	}
+
+	byte ch = 0;
+	int rc = wolfSSH_stream_read(static_cast<WOLFSSH *>(ctx), &ch, 1);
+	if (rc <= 0) {
+		return rc == 0 ? -EIO : rc;
+	}
+
+	return static_cast<int>(ch);
+}
+
+int SessionPeekChar(void *ctx, char *ch)
+{
+	if (ctx == nullptr || ch == nullptr) {
+		return -EINVAL;
+	}
+
+	byte peek = 0;
+	int rc = wolfSSH_stream_peek(static_cast<WOLFSSH *>(ctx), &peek, 1);
+	if (rc == WS_WANT_READ || rc == 0) {
+		return 0;
+	}
+	if (rc < 0) {
+		return rc;
+	}
+
+	*ch = static_cast<char>(peek);
+	return 1;
+}
+
+void RedrawCommandLine(WOLFSSH *ssh, const char *prompt, const char *buffer, size_t len,
+			      size_t cursor)
+{
+	if (ssh == nullptr || prompt == nullptr || buffer == nullptr) {
+		return;
+	}
+
+	(void)SendStreamAll(ssh, "\r\x1b[2K", 5);
+	(void)SendStreamAll(ssh, prompt, strlen(prompt));
+	if (len > 0U) {
+		(void)SendStreamAll(ssh, buffer, len);
+	}
+	(void)SendStreamAll(ssh, "\x1b[0K", 4);
+
+	if (len > cursor) {
+		char seq[32];
+		int written = snprintf(seq, sizeof(seq), "\x1b[%uD",
+				      static_cast<unsigned int>(len - cursor));
+		if (written > 0) {
+			(void)SendStreamAll(ssh, seq, static_cast<size_t>(written));
+		}
+	}
+}
+
+void AddHistory(ConnectionContext *connection, const char *line)
+{
+	if (connection == nullptr || line == nullptr || line[0] == '\0') {
+		return;
+	}
+
+	if (connection->history_count > 0U) {
+		const char *last = connection->history[connection->history_count - 1U];
+		if (strcmp(last, line) == 0) {
+			return;
+		}
+	}
+
+	if (connection->history_count < ARRAY_SIZE(connection->history)) {
+		(void)snprintf(connection->history[connection->history_count],
+			       sizeof(connection->history[connection->history_count]), "%s", line);
+		connection->history_count++;
+		return;
+	}
+
+	for (size_t i = 1U; i < ARRAY_SIZE(connection->history); ++i) {
+		memcpy(connection->history[i - 1U], connection->history[i], sizeof(connection->history[i]));
+	}
+	(void)snprintf(connection->history[ARRAY_SIZE(connection->history) - 1U],
+		       sizeof(connection->history[0]), "%s", line);
+}
+
+void BuildSshPrompt(ConnectionContext *connection, char *buffer, size_t buffer_len)
+{
+	if (connection == nullptr || buffer == nullptr || buffer_len == 0U) {
+		return;
+	}
+
+	char plain_prompt[160];
+	connection->session.BuildPrompt(plain_prompt, sizeof(plain_prompt));
+	(void)snprintf(buffer, buffer_len, "\x1b[1;32m%s\x1b[0m", plain_prompt);
+}
+
+void ConfigureClientSocket(int client)
+{
+	if (client < 0) {
+		return;
+	}
+
+	int keepalive = 1;
+	(void)zsock_setsockopt(client, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+	(void)zsock_setsockopt(client, IPPROTO_TCP, TCP_KEEPIDLE, &kSshKeepaliveIdleSeconds,
+			       sizeof(kSshKeepaliveIdleSeconds));
+	(void)zsock_setsockopt(client, IPPROTO_TCP, TCP_KEEPINTVL,
+			       &kSshKeepaliveIntervalSeconds,
+			       sizeof(kSshKeepaliveIntervalSeconds));
+	(void)zsock_setsockopt(client, IPPROTO_TCP, TCP_KEEPCNT, &kSshKeepaliveProbeCount,
+			       sizeof(kSshKeepaliveProbeCount));
+}
+
+int ReadCommandLine(WOLFSSH *ssh, char *buffer, size_t buffer_len, CommandSession *session,
+		    ConnectionContext *connection, const char *prompt)
+{
+	if (ssh == nullptr || buffer == nullptr || buffer_len < 2U || connection == nullptr ||
+	    prompt == nullptr) {
 		return -EINVAL;
 	}
 
 	size_t offset = 0U;
+	size_t cursor = 0U;
+	size_t history_index = connection->history_count;
+	bool draft_saved = false;
+	char draft[512] = { 0 };
 	buffer[0] = '\0';
 
 	while (offset + 1U < buffer_len) {
@@ -113,40 +254,172 @@ int ReadCommandLine(WOLFSSH *ssh, char *buffer, size_t buffer_len, CommandSessio
 			break;
 		}
 
-		if (ch == 0x7fU || ch == 0x08U) {
-			if (offset > 0U) {
-				--offset;
-				buffer[offset] = '\0';
-				(void)SendStreamAll(ssh, "\b \b", 3);
+		if (ch == 0x1bU) {
+			byte seq1 = 0;
+			byte seq2 = 0;
+			if (wolfSSH_stream_read(ssh, &seq1, 1) <= 0) {
+				continue;
 			}
-			continue;
-		}
+			if (seq1 == '[') {
+				if (wolfSSH_stream_read(ssh, &seq2, 1) <= 0) {
+					continue;
+				}
 
-		if (ch == '\t' && session != nullptr) {
-			// Handle Tab completion
-			buffer[offset] = '\0';
-			char completion[64];
-			int complete_rc = session->Complete(buffer, SessionWriter, ssh, completion,
-							    sizeof(completion));
-			if (complete_rc > 0 && completion[0] != '\0') {
-				// Apply the completion
-				size_t comp_len = strlen(completion);
-				if (offset + comp_len < buffer_len - 1) {
-					memcpy(buffer + offset, completion, comp_len + 1);
-					offset += comp_len;
-					(void)SendStreamAll(ssh, completion, comp_len);
+				if (seq2 >= '0' && seq2 <= '9') {
+					byte seq3 = 0;
+					if (wolfSSH_stream_read(ssh, &seq3, 1) <= 0) {
+						continue;
+					}
+					if (seq2 == '3' && seq3 == '~') {
+						if (cursor < offset) {
+							memmove(buffer + cursor, buffer + cursor + 1U, offset - cursor);
+							offset--;
+							buffer[offset] = '\0';
+							RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+						}
+					} else if (seq3 == '~') {
+						if (seq2 == '1' || seq2 == '7') {
+							cursor = 0U;
+							RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+						} else if (seq2 == '4' || seq2 == '8') {
+							cursor = offset;
+							RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+						}
+					}
+					continue;
+				}
+
+				switch (seq2) {
+				case 'A':
+					if (!draft_saved) {
+						(void)snprintf(draft, sizeof(draft), "%s", buffer);
+						draft_saved = true;
+					}
+					if (history_index > 0U) {
+						history_index--;
+						(void)snprintf(buffer, buffer_len, "%s",
+							       connection->history[history_index]);
+						offset = strlen(buffer);
+						cursor = offset;
+						RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+					}
+					break;
+				case 'B':
+					if (history_index < connection->history_count) {
+						history_index++;
+						if (history_index == connection->history_count && draft_saved) {
+							(void)snprintf(buffer, buffer_len, "%s", draft);
+						} else if (history_index < connection->history_count) {
+							(void)snprintf(buffer, buffer_len, "%s",
+								       connection->history[history_index]);
+						}
+						offset = strlen(buffer);
+						cursor = offset;
+						RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+					}
+					break;
+				case 'C':
+					if (cursor < offset) {
+						cursor++;
+						(void)SendStreamAll(ssh, "\x1b[C", 3);
+					}
+					break;
+				case 'D':
+					if (cursor > 0U) {
+						cursor--;
+						(void)SendStreamAll(ssh, "\x1b[D", 3);
+					}
+					break;
+				case 'H':
+					cursor = 0U;
+					RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+					break;
+				case 'F':
+					cursor = offset;
+					RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+					break;
+				default:
+					break;
 				}
 			}
 			continue;
 		}
 
-		buffer[offset++] = static_cast<char>(ch);
+		if (ch == 0x7fU || ch == 0x08U) {
+			if (cursor > 0U) {
+				cursor--;
+				memmove(buffer + cursor, buffer + cursor + 1U, offset - cursor);
+				--offset;
+				buffer[offset] = '\0';
+				RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+			}
+			continue;
+		}
+
+		if (ch == '\t' && session != nullptr) {
+			buffer[offset] = '\0';
+			char completion[64];
+			int complete_rc = session->Complete(buffer, SessionWriter, ssh, completion,
+							    sizeof(completion));
+			if (complete_rc > 0 && completion[0] != '\0') {
+				size_t comp_len = strlen(completion);
+				if (offset + comp_len < buffer_len - 1U) {
+					memmove(buffer + cursor + comp_len, buffer + cursor, offset - cursor + 1U);
+					memcpy(buffer + cursor, completion, comp_len);
+					offset += comp_len;
+					cursor += comp_len;
+					RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+				}
+			}
+			continue;
+		}
+
+		if (!isprint(static_cast<int>(ch))) {
+			continue;
+		}
+
+		memmove(buffer + cursor + 1U, buffer + cursor, offset - cursor + 1U);
+		buffer[cursor] = static_cast<char>(ch);
+		cursor++;
+		offset++;
 		buffer[offset] = '\0';
-		(void)SendStreamAll(ssh, reinterpret_cast<const char *>(&ch), 1);
+		if (cursor == offset) {
+			(void)SendStreamAll(ssh, reinterpret_cast<const char *>(&ch), 1);
+		} else {
+			RedrawCommandLine(ssh, prompt, buffer, offset, cursor);
+		}
 	}
 
 	buffer[offset] = '\0';
 	return static_cast<int>(offset);
+}
+
+int AcquireWorkerSlot()
+{
+	k_mutex_lock(&g_ssh_worker_lock, K_FOREVER);
+	for (size_t i = 0U; i < ARRAY_SIZE(g_ssh_worker_slots); ++i) {
+		if (!g_ssh_worker_slots[i].busy) {
+			g_ssh_worker_slots[i].busy = true;
+			k_mutex_unlock(&g_ssh_worker_lock);
+			return static_cast<int>(i);
+		}
+	}
+	k_mutex_unlock(&g_ssh_worker_lock);
+	return -1;
+}
+
+void ReleaseWorkerSlot(int slot)
+{
+	if (slot < 0 || static_cast<size_t>(slot) >= ARRAY_SIZE(g_ssh_worker_slots)) {
+		return;
+	}
+
+	k_mutex_lock(&g_ssh_worker_lock, K_FOREVER);
+	g_ssh_worker_slots[slot].busy = false;
+	g_ssh_worker_slots[slot].server = nullptr;
+	g_ssh_worker_slots[slot].client = -1;
+	k_mutex_unlock(&g_ssh_worker_lock);
+	k_sem_give(&g_ssh_worker_sem);
 }
 
 bool MatchAuthorizedKeyLine(const char *line, const byte *public_key, word32 public_key_sz)
@@ -590,6 +863,29 @@ void SshServer::ThreadEntry(void *ctx, void *unused1, void *unused2)
 	static_cast<SshServer *>(ctx)->Run();
 }
 
+void SshServer::ClientThreadEntry(void *ctx, void *unused1, void *unused2)
+{
+	ARG_UNUSED(unused1);
+	ARG_UNUSED(unused2);
+
+	auto *slot = static_cast<SshWorkerSlot *>(ctx);
+	if (slot == nullptr || slot->server == nullptr || slot->client < 0) {
+		return;
+	}
+
+	(void)slot->server->HandleClient(slot->client);
+	(void)zsock_close(slot->client);
+
+	int slot_index = -1;
+	for (size_t i = 0U; i < ARRAY_SIZE(g_ssh_worker_slots); ++i) {
+		if (&g_ssh_worker_slots[i] == slot) {
+			slot_index = static_cast<int>(i);
+			break;
+		}
+	}
+	ReleaseWorkerSlot(slot_index);
+}
+
 void SshServer::Run()
 {
 	struct sockaddr_in addr = {};
@@ -624,8 +920,33 @@ void SshServer::Run()
 			continue;
 		}
 
-		(void)HandleClient(client);
-		(void)zsock_close(client);
+		if (k_sem_take(&g_ssh_worker_sem, K_NO_WAIT) != 0) {
+			LOG_WRN("ssh busy: dropping client");
+			(void)zsock_close(client);
+			continue;
+		}
+
+		int slot = AcquireWorkerSlot();
+		if (slot < 0) {
+			LOG_WRN("ssh worker slot allocation failed");
+			k_sem_give(&g_ssh_worker_sem);
+			(void)zsock_close(client);
+			continue;
+		}
+
+		g_ssh_worker_slots[slot].server = this;
+		g_ssh_worker_slots[slot].client = client;
+		k_tid_t worker = k_thread_create(&g_ssh_worker_slots[slot].thread,
+						 g_ssh_worker_stacks[slot],
+						 K_THREAD_STACK_SIZEOF(g_ssh_worker_stacks[slot]),
+						 ClientThreadEntry, &g_ssh_worker_slots[slot],
+						 nullptr, nullptr, 6, 0, K_NO_WAIT);
+		if (worker == nullptr) {
+			LOG_ERR("ssh worker thread create failed");
+			(void)zsock_close(client);
+			ReleaseWorkerSlot(slot);
+			continue;
+		}
 	}
 }
 
@@ -633,6 +954,7 @@ int SshServer::HandleClient(int client)
 {
 	ServiceContext services = { &fan_controller_, &wifi_manager_, &host_control_ };
 	ConnectionContext connection(services, config_);
+	ConfigureClientSocket(client);
 	WOLFSSH *ssh = wolfSSH_new(ctx_);
 	if (ssh == nullptr) {
 		return -ENOMEM;
@@ -658,7 +980,8 @@ int SshServer::HandleClient(int client)
 
 	if (connection.exec_requested) {
 		CommandSessionResult result = {};
-		rc = connection.session.Execute(connection.exec_command, SessionWriter, ssh, &result);
+		rc = connection.session.Execute(connection.exec_command, SessionWriter, ssh, &result,
+						     nullptr, nullptr);
 		(void)wolfSSH_stream_exit(ssh, rc == 0 ? 0 : 1);
 		if (result.reboot_requested) {
 			connection.reboot_requested = true;
@@ -670,18 +993,22 @@ int SshServer::HandleClient(int client)
 		(void)SendStreamAll(ssh, banner, strlen(banner));
 
 		while (true) {
-			char prompt[160];
-			connection.session.BuildPrompt(prompt, sizeof(prompt));
+			char prompt[192];
+			BuildSshPrompt(&connection, prompt, sizeof(prompt));
 			(void)SendStreamAll(ssh, prompt, strlen(prompt));
 
 			char line[512];
-			rc = ReadCommandLine(ssh, line, sizeof(line), &connection.session);
+			rc = ReadCommandLine(ssh, line, sizeof(line), &connection.session, &connection,
+					     prompt);
 			if (rc < 0) {
 				break;
 			}
 
+			AddHistory(&connection, line);
+
 			CommandSessionResult result = {};
-			(void)connection.session.Execute(line, SessionWriter, ssh, &result);
+			(void)connection.session.Execute(line, SessionWriter, ssh, &result,
+						     SessionReadChar, SessionPeekChar);
 			if (result.reboot_requested) {
 				connection.reboot_requested = true;
 			}

@@ -58,7 +58,8 @@ bool TrySyncNtpAddress(const struct net_in_addr *addr, int port, struct sntp_tim
 
 WifiManager::WifiManager()
 	: ap_iface_(nullptr), sta_iface_(nullptr), ap_enabled_(false), sta_connected_(false),
-	  ap_clients_(0), cached_sta_rssi_(0), scan_count_(0), scan_complete_(false), scan_status_(0)
+	  ap_clients_(0), cached_sta_rssi_(0), sta_power_save_disabled_(false), scan_count_(0),
+	  scan_complete_(false), scan_status_(0)
 {
 	ap_ssid_[0] = '\0';
 	saved_ssid_[0] = '\0';
@@ -219,6 +220,26 @@ int WifiManager::ReadStatus(struct wifi_iface_status *status)
 	return net_mgmt(NET_REQUEST_WIFI_IFACE_STATUS, sta_iface_, status, sizeof(*status));
 }
 
+int WifiManager::DisableStaPowerSave()
+{
+	if (sta_iface_ == nullptr) {
+		return -ENODEV;
+	}
+
+	struct wifi_ps_params params = {};
+	params.enabled = WIFI_PS_DISABLED;
+	params.type = WIFI_PS_PARAM_STATE;
+
+	int rc = net_mgmt(NET_REQUEST_WIFI_PS, sta_iface_, &params, sizeof(params));
+	if (rc == 0) {
+		LOG_INF("WiFi STA: power save disabled for low-latency traffic");
+	} else {
+		LOG_WRN("WiFi STA: failed to disable power save: %d", rc);
+	}
+
+	return rc;
+}
+
 void WifiManager::EventHandler(struct net_mgmt_event_callback *cb, uint64_t mgmt_event,
 			       struct net_if *iface)
 {
@@ -363,6 +384,7 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 {
 	k_mutex_lock(&mutex_, K_FOREVER);
 	bool schedule_ntp_sync = false;
+	bool disable_sta_power_save = false;
 
 	switch (mgmt_event) {
 	case NET_EVENT_WIFI_CONNECT_RESULT: {
@@ -374,6 +396,7 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		if (sta_connected_) {
 			LOG_INF("WiFi STA: CONNECTED SUCCESSFULLY");
 			LOG_INF("  SSID: %s", saved_ssid_);
+			sta_power_save_disabled_ = false;
 			// Cancel any pending reconnect and reset counter
 			if (reconnect_attempts_ > 0) {
 				(void)k_work_cancel_delayable(&reconnect_work_);
@@ -458,6 +481,7 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 	}
 	case NET_EVENT_WIFI_DISCONNECT_RESULT:
 		sta_connected_ = false;
+		sta_power_save_disabled_ = false;
 		(void)k_work_cancel_delayable(&ntp_sync_work_);
 		LOG_INF("WiFi STA: Disconnected from AP");
 		// Schedule reconnect if we have saved credentials
@@ -503,6 +527,9 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		break;
 	case NET_EVENT_IPV4_DHCP_BOUND: {
 		if (sta_iface_ != nullptr && iface == sta_iface_) {
+			if (sta_connected_ && !sta_power_save_disabled_) {
+				disable_sta_power_save = true;
+			}
 			char ip[NET_IPV4_ADDR_LEN] = { 0 };
 			struct net_in_addr *ipv4 = net_if_ipv4_get_global_addr(sta_iface_, NET_ADDR_PREFERRED);
 			if (ipv4 != nullptr &&
@@ -540,6 +567,14 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 	}
 
 	k_mutex_unlock(&mutex_);
+
+	if (disable_sta_power_save) {
+		if (DisableStaPowerSave() == 0) {
+			k_mutex_lock(&mutex_, K_FOREVER);
+			sta_power_save_disabled_ = true;
+			k_mutex_unlock(&mutex_);
+		}
+	}
 
 	if (schedule_ntp_sync) {
 		(void)k_work_reschedule(&ntp_sync_work_, K_SECONDS(5));
@@ -685,6 +720,7 @@ int WifiManager::SaveAndConnect(const char *ssid, const char *psk)
 
 	k_mutex_lock(&mutex_, K_FOREVER);
 	(void)snprintf(saved_ssid_, sizeof(saved_ssid_), "%s", ssid);
+	sta_power_save_disabled_ = false;
 	k_mutex_unlock(&mutex_);
 	settings::SaveWifiCredentials(ssid, psk_len > 0U ? psk : "");
 
@@ -699,6 +735,7 @@ int WifiManager::ClearCredentials()
 	sta_connected_ = false;
 	cached_sta_rssi_ = 0;
 	cached_sta_ip_[0] = '\0';
+	sta_power_save_disabled_ = false;
 	(void)snprintf(cached_sta_state_, sizeof(cached_sta_state_), "%s", "INACTIVE");
 	k_mutex_unlock(&mutex_);
 	settings::ClearWifiCredentials();

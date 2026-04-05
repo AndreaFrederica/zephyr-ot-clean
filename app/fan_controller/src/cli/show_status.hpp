@@ -21,6 +21,7 @@
 #include "curve_profiles.hpp"
 #include "fan_controller.hpp"
 #include "host_control_manager.hpp"
+#include "kilo_editor.hpp"
 #include "settings_store.hpp"
 #include "storage.hpp"
 #include "wifi_manager.hpp"
@@ -295,6 +296,13 @@ inline void WriteSystem(EmitLineFn emit, void *ctx)
 		detail::EmitLinef(emit, ctx, "  http psram         : unavailable");
 	}
 
+	memory::HeapSnapshot kilo_heap = {};
+	if (kilo::GetHeapSnapshot(&kilo_heap)) {
+		detail::EmitHeapStats(emit, ctx, "kilo psram", kilo_heap);
+	} else {
+		detail::EmitLinef(emit, ctx, "  kilo psram         : unavailable");
+	}
+
 	char recv_text[24];
 	char scratch_text[24];
 	char slot_total_text[24];
@@ -563,6 +571,15 @@ inline void WriteMonitor(EmitLineFn emit, void *ctx, FanController &fan_controll
 		detail::FormatBytes(http_heap.free_bytes, free_text, sizeof(free_text));
 		detail::FormatBytes(http_heap.allocated_bytes, used_text, sizeof(used_text));
 		detail::EmitLinef(emit, ctx, "heap  http used=%s free=%s", used_text, free_text);
+	}
+
+	memory::HeapSnapshot kilo_heap = {};
+	if (kilo::GetHeapSnapshot(&kilo_heap) && kilo_heap.available) {
+		char free_text[24];
+		char used_text[24];
+		detail::FormatBytes(kilo_heap.free_bytes, free_text, sizeof(free_text));
+		detail::FormatBytes(kilo_heap.allocated_bytes, used_text, sizeof(used_text));
+		detail::EmitLinef(emit, ctx, "heap  kilo used=%s free=%s", used_text, free_text);
 	}
 
 	for (size_t i = 0U; i < kFanCount; ++i) {

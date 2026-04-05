@@ -231,6 +231,66 @@ int WriteFileAbsolute(const char *path, const char *data, size_t size)
 	return (static_cast<size_t>(written) == size) ? 0 : -EIO;
 }
 
+int CopyFileAbsolute(const char *source_path, const char *target_path)
+{
+	if (source_path == nullptr || target_path == nullptr) {
+		return -EINVAL;
+	}
+
+	int rc = EnsureParentDirs(target_path);
+	if (rc != 0) {
+		return rc;
+	}
+
+	struct fs_file_t source;
+	struct fs_file_t target;
+	char buffer[256];
+
+	fs_file_t_init(&source);
+	fs_file_t_init(&target);
+
+	rc = fs_open(&source, source_path, FS_O_READ);
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = fs_open(&target, target_path, FS_O_CREATE | FS_O_TRUNC | FS_O_WRITE);
+	if (rc != 0) {
+		(void)fs_close(&source);
+		return rc;
+	}
+
+	while (true) {
+		ssize_t read_len = fs_read(&source, buffer, sizeof(buffer));
+		if (read_len < 0) {
+			rc = static_cast<int>(read_len);
+			break;
+		}
+		if (read_len == 0) {
+			rc = 0;
+			break;
+		}
+
+		ssize_t written = fs_write(&target, buffer, static_cast<size_t>(read_len));
+		if (written < 0) {
+			rc = static_cast<int>(written);
+			break;
+		}
+		if (written != read_len) {
+			rc = -EIO;
+			break;
+		}
+	}
+
+	(void)fs_close(&target);
+	(void)fs_close(&source);
+	if (rc != 0) {
+		(void)fs_unlink(target_path);
+	}
+	return rc;
+
+}
+
 int EnsureSeedFile(const char *path, const char *content)
 {
 	if (FileExistsAbsolute(path)) {
@@ -649,6 +709,74 @@ int DeletePath(const char *user_path)
 	}
 
 	return fs_unlink(fs_path);
+}
+
+int CopyPath(const char *source_path, const char *target_path)
+{
+	if (IsRootPath(source_path) || IsRootPath(target_path)) {
+		return -EINVAL;
+	}
+
+	char source_fs_path[160];
+	char target_fs_path[160];
+	int rc = ResolveManagedPath(source_path, source_fs_path, sizeof(source_fs_path));
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = ResolveManagedPath(target_path, target_fs_path, sizeof(target_fs_path));
+	if (rc != 0) {
+		return rc;
+	}
+
+	if (FileExistsAbsolute(target_fs_path)) {
+		return -EEXIST;
+	}
+
+	struct fs_dirent entry = {};
+	rc = fs_stat(source_fs_path, &entry);
+	if (rc != 0) {
+		return rc;
+	}
+
+	if (entry.type != FS_DIR_ENTRY_FILE) {
+		return -EISDIR;
+	}
+
+	return CopyFileAbsolute(source_fs_path, target_fs_path);
+}
+
+int MovePath(const char *source_path, const char *target_path)
+{
+	if (IsRootPath(source_path) || IsRootPath(target_path)) {
+		return -EINVAL;
+	}
+	if (IsProtectedPath(source_path) || IsProtectedPath(target_path)) {
+		return -EPERM;
+	}
+
+	char source_fs_path[160];
+	char target_fs_path[160];
+	int rc = ResolveManagedPath(source_path, source_fs_path, sizeof(source_fs_path));
+	if (rc != 0) {
+		return rc;
+	}
+
+	rc = ResolveManagedPath(target_path, target_fs_path, sizeof(target_fs_path));
+	if (rc != 0) {
+		return rc;
+	}
+
+	if (FileExistsAbsolute(target_fs_path)) {
+		return -EEXIST;
+	}
+
+	rc = EnsureParentDirs(target_fs_path);
+	if (rc != 0) {
+		return rc;
+	}
+
+	return fs_rename(source_fs_path, target_fs_path);
 }
 
 bool PathExists(const char *user_path)

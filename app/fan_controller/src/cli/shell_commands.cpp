@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <zephyr/kernel.h>
 #include <zephyr/fs/fs.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_uart.h>
@@ -17,6 +18,7 @@
 
 #include "cli_runtime.hpp"
 #include "core/common.hpp"
+#include "kilo_editor.hpp"
 #include "line_editor.hpp"
 #include "storage.hpp"
 #include "wifi_manager.hpp"
@@ -30,6 +32,57 @@ LineEditor g_editor;
 char g_cwd[128] = "/root";
 char g_prompt[80] = "root@fanctl:/root$ ";
 cli::State g_state = { &g_editor, g_cwd, sizeof(g_cwd) };
+
+struct ShellKiloSession {
+	const struct shell *sh;
+	k_mutex lock;
+	k_sem data_ready;
+	k_sem finished;
+	k_thread thread;
+	char path[128];
+	uint8_t buffer[512];
+	size_t head;
+	size_t tail;
+	size_t count;
+	bool active;
+};
+
+K_THREAD_STACK_DEFINE(g_kilo_stack, 12288);
+ShellKiloSession g_kilo_session = {};
+
+void UpdateShellPrompt(const struct shell *sh);
+
+void ShellTransportWrite(const struct shell *sh, const char *text, size_t len)
+{
+	if (sh == nullptr || text == nullptr || len == 0U || sh->iface == nullptr ||
+	    sh->iface->api == nullptr || sh->iface->api->write == nullptr) {
+		return;
+	}
+
+	constexpr size_t kShellWriteChunk = 64U;
+	constexpr int kShellWriteStallLimit = 200;
+	size_t offset = 0U;
+	int stall_count = 0;
+	while (offset < len) {
+		size_t request_len = MIN(len - offset, kShellWriteChunk);
+		size_t written = 0U;
+		int rc = sh->iface->api->write(sh->iface, text + offset, request_len, &written);
+		if (rc != 0) {
+			break;
+		}
+
+		if (written == 0U) {
+			if (++stall_count >= kShellWriteStallLimit) {
+				break;
+			}
+			k_sleep(K_MSEC(1));
+			continue;
+		}
+
+		stall_count = 0;
+		offset += written;
+	}
+}
 
 void ShellWrite(void *ctx, const char *text, size_t len)
 {
@@ -50,6 +103,112 @@ cli::Io MakeIo(const struct shell *sh)
 	io.line = ShellLine;
 	io.ctx = const_cast<shell *>(sh);
 	return io;
+}
+
+void KiloShellWrite(void *ctx, const char *text, size_t len)
+{
+	ShellKiloSession *session = static_cast<ShellKiloSession *>(ctx);
+	if (session == nullptr) {
+		return;
+	}
+
+	ShellTransportWrite(session->sh, text, len);
+}
+
+void KiloBypassCallback(const struct shell *sh, uint8_t *data, size_t len, void *user_data)
+{
+	ARG_UNUSED(sh);
+
+	ShellKiloSession *session = static_cast<ShellKiloSession *>(user_data);
+	if (session == nullptr || data == nullptr || len == 0U) {
+		return;
+	}
+
+	k_mutex_lock(&session->lock, K_FOREVER);
+	for (size_t i = 0; i < len; ++i) {
+		if (session->count >= ARRAY_SIZE(session->buffer)) {
+			break;
+		}
+		session->buffer[session->head] = data[i];
+		session->head = (session->head + 1U) % ARRAY_SIZE(session->buffer);
+		session->count++;
+		k_sem_give(&session->data_ready);
+	}
+	k_mutex_unlock(&session->lock);
+}
+
+int KiloReadChar(void *ctx)
+{
+	ShellKiloSession *session = static_cast<ShellKiloSession *>(ctx);
+	if (session == nullptr) {
+		return -EINVAL;
+	}
+
+	while (true) {
+		k_mutex_lock(&session->lock, K_FOREVER);
+		if (session->count > 0U) {
+			uint8_t ch = session->buffer[session->tail];
+			session->tail = (session->tail + 1U) % ARRAY_SIZE(session->buffer);
+			session->count--;
+			k_mutex_unlock(&session->lock);
+			return static_cast<int>(ch);
+		}
+		bool active = session->active;
+		k_mutex_unlock(&session->lock);
+
+		if (!active) {
+			return -EIO;
+		}
+
+		(void)k_sem_take(&session->data_ready, K_FOREVER);
+	}
+}
+
+int KiloPeekChar(void *ctx, char *ch)
+{
+	ShellKiloSession *session = static_cast<ShellKiloSession *>(ctx);
+	if (session == nullptr || ch == nullptr) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&session->lock, K_FOREVER);
+	if (session->count == 0U) {
+		k_mutex_unlock(&session->lock);
+		return 0;
+	}
+
+	*ch = static_cast<char>(session->buffer[session->tail]);
+	k_mutex_unlock(&session->lock);
+	return 1;
+}
+
+void KiloThreadEntry(void *ctx, void *, void *)
+{
+	ShellKiloSession *session = static_cast<ShellKiloSession *>(ctx);
+	if (session == nullptr || session->sh == nullptr) {
+		return;
+	}
+
+	kilo::Io io = {};
+	io.read_char = KiloReadChar;
+	io.peek_char = KiloPeekChar;
+	io.write = KiloShellWrite;
+	io.ctx = session;
+
+	int rc = kilo::Run(io, session->path, 24, 80);
+	shell_set_bypass(session->sh, nullptr, nullptr);
+	if (rc != 0) {
+		shell_error(session->sh, "kilo exited with error: %d", rc);
+	}
+
+	k_mutex_lock(&session->lock, K_FOREVER);
+	session->active = false;
+	session->count = 0U;
+	session->head = 0U;
+	session->tail = 0U;
+	k_mutex_unlock(&session->lock);
+	UpdateShellPrompt(session->sh);
+	k_sem_give(&session->finished);
 }
 
 void FillDynamicEntry(struct shell_static_entry *entry, const char *syntax, const char *help)
@@ -292,6 +451,18 @@ int CmdRm(const struct shell *sh, size_t argc, char **argv)
 	return cli::HandleRm(g_runtime, g_state, argv[1], MakeIo(sh));
 }
 
+int CmdCp(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	return cli::HandleCp(g_runtime, g_state, argv[1], argv[2], MakeIo(sh));
+}
+
+int CmdMv(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	return cli::HandleMv(g_runtime, g_state, argv[1], argv[2], MakeIo(sh));
+}
+
 int CmdWriteFile(const struct shell *sh, size_t argc, char **argv)
 {
 	return cli::HandleWriteFile(g_runtime, g_state, argv, static_cast<int>(argc), MakeIo(sh));
@@ -373,6 +544,52 @@ int CmdStorageSummary(const struct shell *sh, size_t argc, char **argv)
 int CmdTop(const struct shell *sh, size_t argc, char **argv)
 {
 	return cli::HandleTop(g_runtime, argv, static_cast<int>(argc), MakeIo(sh));
+}
+
+int CmdKilo(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+
+	if (sh == nullptr) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_kilo_session.lock, K_FOREVER);
+	if (g_kilo_session.active) {
+		k_mutex_unlock(&g_kilo_session.lock);
+		shell_error(sh, "kilo is already running");
+		return -EBUSY;
+	}
+	k_mutex_unlock(&g_kilo_session.lock);
+
+	char resolved[128];
+	int rc = cli::ResolvePath(g_state, argv[1], resolved, sizeof(resolved));
+	if (rc != 0) {
+		shell_error(sh, "kilo: invalid path: %d", rc);
+		return rc;
+	}
+
+	k_mutex_lock(&g_kilo_session.lock, K_FOREVER);
+	g_kilo_session.sh = sh;
+	g_kilo_session.head = 0U;
+	g_kilo_session.tail = 0U;
+	g_kilo_session.count = 0U;
+	g_kilo_session.active = true;
+	(void)snprintf(g_kilo_session.path, sizeof(g_kilo_session.path), "%s", resolved);
+	k_mutex_unlock(&g_kilo_session.lock);
+
+	while (k_sem_take(&g_kilo_session.data_ready, K_NO_WAIT) == 0) {
+	}
+	while (k_sem_take(&g_kilo_session.finished, K_NO_WAIT) == 0) {
+	}
+
+	shell_set_bypass(sh, KiloBypassCallback, &g_kilo_session);
+	(void)k_thread_create(&g_kilo_session.thread, g_kilo_stack,
+			      K_THREAD_STACK_SIZEOF(g_kilo_stack), KiloThreadEntry,
+			      &g_kilo_session, nullptr, nullptr, K_PRIO_PREEMPT(8), 0,
+			      K_NO_WAIT);
+	k_thread_name_set(&g_kilo_session.thread, "fanctl_kilo");
+	return 0;
 }
 
 int CmdScan(const struct shell *sh, size_t argc, char **argv)
@@ -578,6 +795,9 @@ SHELL_CMD_ARG_REGISTER(mkdir, &dsub_paths, "mkdir <path>", CmdMkdir, 2, 0);
 SHELL_CMD_ARG_REGISTER(cd, &dsub_paths, "cd <path>", CmdCd, 1, 1);
 SHELL_CMD_REGISTER(pwd, NULL, "Print current directory", CmdPwd);
 SHELL_CMD_ARG_REGISTER(rm, &dsub_paths, "rm <path>", CmdRm, 2, 0);
+SHELL_CMD_ARG_REGISTER(cp, &dsub_paths, "cp <source> <target>", CmdCp, 3, 0);
+SHELL_CMD_ARG_REGISTER(mv, &dsub_paths, "mv <source> <target>", CmdMv, 3, 0);
+SHELL_CMD_ARG_REGISTER(kilo, &dsub_paths, "kilo <path>", CmdKilo, 2, 0);
 SHELL_CMD_ARG_REGISTER(writefile, &dsub_paths, "writefile <path> <text>", CmdWriteFile, 3, 16);
 SHELL_CMD_ARG_REGISTER(wificonnect, NULL, "Wi-Fi connection utility: wificonnect [number] [password]",
 		       CmdWifiConnect, 1, 2);
@@ -590,6 +810,10 @@ void Init(const ServiceContext &services)
 {
 	g_runtime = services;
 	cli::ResetState(&g_state);
+	k_mutex_init(&g_kilo_session.lock);
+	k_sem_init(&g_kilo_session.data_ready, 0, UINT_MAX);
+	k_sem_init(&g_kilo_session.finished, 0, 1);
+	g_kilo_session.active = false;
 	UpdateShellPrompt(nullptr);
 }
 

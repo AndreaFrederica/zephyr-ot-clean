@@ -18,6 +18,8 @@ int ReadTextFile(const char *user_path, char *content, size_t content_len, size_
 int WriteTextFile(const char *user_path, const char *content, size_t content_len);
 int MakeDirectory(const char *user_path);
 int DeletePath(const char *user_path);
+int CopyPath(const char *source_path, const char *target_path);
+int MovePath(const char *source_path, const char *target_path);
 bool PathExists(const char *user_path);
 const char *GetConfigPath();
 const char *GetMountPoint();

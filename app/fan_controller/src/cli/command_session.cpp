@@ -16,6 +16,7 @@
 
 #include "cli_runtime.hpp"
 #include "core/common.hpp"
+#include "kilo_editor.hpp"
 #include "settings_store.hpp"
 #include "storage.hpp"
 
@@ -272,7 +273,8 @@ void CommandSession::EmitHelp(SessionWriteFn writer, void *ctx) const
 }
 
 int CommandSession::Execute(const char *command_line, SessionWriteFn writer, void *ctx,
-			    CommandSessionResult *result)
+			    CommandSessionResult *result, SessionReadCharFn reader,
+			    SessionPeekCharFn peeker)
 {
 	if (result != nullptr) {
 		result->exit_requested = false;
@@ -353,6 +355,26 @@ int CommandSession::Execute(const char *command_line, SessionWriteFn writer, voi
 		return HandleRm(argv[1], writer, ctx);
 	}
 
+	if (strcmp(argv[0], "cp") == 0) {
+		if (argc < 3) {
+			Emit(writer, ctx, "usage: cp <source> <target>\r\n");
+			return -EINVAL;
+		}
+		SessionEmitContext emit = { writer, ctx };
+		return cli::HandleCp(services_, MakeState(editor_, cwd_, sizeof(cwd_)), argv[1], argv[2],
+					 MakeIo(&emit));
+	}
+
+	if (strcmp(argv[0], "mv") == 0) {
+		if (argc < 3) {
+			Emit(writer, ctx, "usage: mv <source> <target>\r\n");
+			return -EINVAL;
+		}
+		SessionEmitContext emit = { writer, ctx };
+		return cli::HandleMv(services_, MakeState(editor_, cwd_, sizeof(cwd_)), argv[1], argv[2],
+					 MakeIo(&emit));
+	}
+
 	if (strcmp(argv[0], "writefile") == 0) {
 		if (argc < 3) {
 			Emit(writer, ctx, "usage: writefile <path> <text>\r\n");
@@ -376,6 +398,36 @@ int CommandSession::Execute(const char *command_line, SessionWriteFn writer, voi
 
 	if (strcmp(argv[0], "edit") == 0) {
 		return HandleEdit(argv, argc, writer, ctx);
+	}
+
+	if (strcmp(argv[0], "kilo") == 0) {
+		if (argc < 2) {
+			Emit(writer, ctx, "usage: kilo <path>\r\n");
+			return -EINVAL;
+		}
+		if (reader == nullptr) {
+			Emit(writer, ctx, "kilo: interactive input unavailable\r\n");
+			return -ENOTSUP;
+		}
+
+		char resolved[128];
+		int rc = ResolvePath(argv[1], resolved, sizeof(resolved));
+		if (rc != 0) {
+			Emitf(writer, ctx, "kilo: invalid path (%d)\r\n", rc);
+			return rc;
+		}
+
+		kilo::Io io = {};
+		io.read_char = reader;
+		io.peek_char = peeker;
+		io.write = writer;
+		io.ctx = ctx;
+
+		rc = kilo::Run(io, resolved, 24, 80);
+		if (rc != 0) {
+			Emitf(writer, ctx, "kilo: exited with error (%d)\r\n", rc);
+		}
+		return rc;
 	}
 
 	if (strcmp(argv[0], "top") == 0 || strcmp(argv[0], "htop") == 0) {
@@ -441,8 +493,9 @@ int CommandSession::Execute(const char *command_line, SessionWriteFn writer, voi
 namespace {
 
 const char *kTopLevelCommands[] = {
-	"help", "pwd", "cd", "ls", "cat", "cf", "duf", "touch", "mkdir", "rm",
-	"writefile", "fanctl", "show", "edit", "whoami", "hostname",
+	"help", "pwd", "cd", "ls", "cat", "cf", "duf", "touch", "mkdir", "rm", "cp",
+	"mv",
+	"writefile", "fanctl", "show", "edit", "kilo", "whoami", "hostname",
 	"uname", "echo", "clear", "top", "htop", "exit", "reboot", nullptr
 };
 

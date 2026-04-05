@@ -47,6 +47,7 @@ private:
 	void BuildApSsid(const settings::WifiConfig *wifi_config = nullptr);
 	int ConnectToNetwork(const char *ssid, const char *psk);
 	int EnableDhcpServer();
+	int DisableStaPowerSave();
 	int ReadStatus(struct wifi_iface_status *status);
 	void SyncTimeViaNtp();
 
@@ -63,6 +64,7 @@ private:
 	char cached_sta_state_[24];
 	char cached_sta_ip_[NET_IPV4_ADDR_LEN];
 	int cached_sta_rssi_;
+	bool sta_power_save_disabled_;
 	
 	// Scan state
 	WifiScanResult scan_results_[16];

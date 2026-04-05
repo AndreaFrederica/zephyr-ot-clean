@@ -53,6 +53,10 @@ int HandleCat(const Runtime &runtime, const State &state, const char *path, cons
 int HandleTouch(const Runtime &runtime, const State &state, const char *path, const Io &io);
 int HandleMkdir(const Runtime &runtime, const State &state, const char *path, const Io &io);
 int HandleRm(const Runtime &runtime, const State &state, const char *path, const Io &io);
+int HandleCp(const Runtime &runtime, const State &state, const char *source, const char *target,
+	     const Io &io);
+int HandleMv(const Runtime &runtime, const State &state, const char *source, const char *target,
+	     const Io &io);
 int HandleWriteFile(const Runtime &runtime, const State &state, char *argv[], int argc, const Io &io);
 int HandleCd(const Runtime &runtime, State *state, const char *path, const Io &io);
 int HandlePwd(const State &state, const Io &io);

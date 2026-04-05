@@ -13,6 +13,8 @@
 namespace fanctl {
 
 using SessionWriteFn = void (*)(void *ctx, const char *text, size_t len);
+using SessionReadCharFn = int (*)(void *ctx);
+using SessionPeekCharFn = int (*)(void *ctx, char *ch);
 
 struct CommandSessionResult {
 	bool exit_requested;
@@ -26,7 +28,8 @@ public:
 	void Reset();
 	void BuildPrompt(char *buffer, size_t buffer_len) const;
 	int Execute(const char *command_line, SessionWriteFn writer, void *ctx,
-		    CommandSessionResult *result);
+		    CommandSessionResult *result, SessionReadCharFn reader = nullptr,
+		    SessionPeekCharFn peeker = nullptr);
 	int Complete(const char *command_line, SessionWriteFn writer, void *ctx,
 		     char *completion, size_t completion_len);
 

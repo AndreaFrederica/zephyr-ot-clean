@@ -294,11 +294,14 @@ void EmitHelp(const Io &io)
 	     "  touch <path>\n"
 	     "  mkdir <path>\n"
 	     "  rm <path>\n"
+	     "  cp <source> <target>\n"
+	     "  mv <source> <target>\n"
 	     "  writefile <path> <text>\n"
 	     "  fanctl status|set|wifi|ap|config|clearwifi|factoryreset\n"
 	     "  show fans [1|2]|curves|system|wifi|storage|host|ntp|ssh|all\n"
 	     "  top [samples] [interval_ms]\n"
 	     "  edit open|status|show|set|ins|app|del|write|saveas|quit\n"
+	     "  kilo <path>\n"
 	     "  whoami\n"
 	     "  hostname\n"
 	     "  uname\n"
@@ -456,6 +459,60 @@ int HandleRm(const Runtime &, const State &state, const char *path, const Io &io
 	}
 
 	EmitLinef(io, "Deleted %s", user_path);
+	return 0;
+}
+
+int HandleCp(const Runtime &, const State &state, const char *source, const char *target,
+	     const Io &io)
+{
+	char source_path[128];
+	char target_path[128];
+	int rc = ResolvePath(state, source, source_path, sizeof(source_path));
+	if (rc != 0) {
+		EmitLinef(io, "cp: invalid source (%d)", rc);
+		return rc;
+	}
+
+	rc = ResolvePath(state, target, target_path, sizeof(target_path));
+	if (rc != 0) {
+		EmitLinef(io, "cp: invalid target (%d)", rc);
+		return rc;
+	}
+
+	rc = storage::CopyPath(source_path, target_path);
+	if (rc != 0) {
+		EmitLinef(io, "cp failed: %d", rc);
+		return rc;
+	}
+
+	EmitLinef(io, "Copied %s -> %s", source_path, target_path);
+	return 0;
+}
+
+int HandleMv(const Runtime &, const State &state, const char *source, const char *target,
+	     const Io &io)
+{
+	char source_path[128];
+	char target_path[128];
+	int rc = ResolvePath(state, source, source_path, sizeof(source_path));
+	if (rc != 0) {
+		EmitLinef(io, "mv: invalid source (%d)", rc);
+		return rc;
+	}
+
+	rc = ResolvePath(state, target, target_path, sizeof(target_path));
+	if (rc != 0) {
+		EmitLinef(io, "mv: invalid target (%d)", rc);
+		return rc;
+	}
+
+	rc = storage::MovePath(source_path, target_path);
+	if (rc != 0) {
+		EmitLinef(io, "mv failed: %d", rc);
+		return rc;
+	}
+
+	EmitLinef(io, "Moved %s -> %s", source_path, target_path);
 	return 0;
 }
 
