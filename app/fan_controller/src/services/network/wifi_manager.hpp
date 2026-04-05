@@ -37,6 +37,7 @@ public:
 
 private:
 	static void NtpSyncWorkHandler(struct k_work *work);
+	static void ReconnectWorkHandler(struct k_work *work);
 	bool TrySyncNtp(const char *server, int port, struct sntp_time *out_time);
 	static void EventHandler(struct net_mgmt_event_callback *cb, uint64_t mgmt_event,
 				 struct net_if *iface);
@@ -66,6 +67,8 @@ private:
 	int scan_status_;
 	struct k_sem scan_sem_;
 	struct k_work_delayable ntp_sync_work_;
+	struct k_work_delayable reconnect_work_;
+	int reconnect_attempts_;
 };
 
 } // namespace fanctl

@@ -102,8 +102,29 @@ int main()
 	g_wifi_manager.GetSnapshot(&wifi);
 
 	printk("Fan controller ready.\n");
-	printk("AP SSID: %s  PSK: %s  IP: %s\n", wifi.ap_ssid, fanctl::kApPsk, fanctl::kApIpAddr);
-	printk("HTTP: http://%s/\n", fanctl::kApIpAddr);
+	
+	// Show AP or STA info based on what's enabled
+	if (wifi.ap_enabled) {
+		printk("AP SSID: %s  PSK: %s  IP: %s\n", 
+		       wifi.ap_ssid[0] != '\0' ? wifi.ap_ssid : "(starting)", 
+		       fanctl::kApPsk, fanctl::kApIpAddr);
+	}
+	
+	if (wifi.sta_connected) {
+		printk("STA IP: %s  (connected to: %s)\n", wifi.sta_ip, wifi.saved_ssid);
+	} else if (wifi.saved_ssid[0] != '\0') {
+		printk("STA: Connecting to %s...\n", wifi.saved_ssid);
+	}
+	
+	// HTTP server listens on all interfaces
+	if (wifi.ap_enabled && wifi.sta_connected) {
+		printk("HTTP: http://%s/  http://%s/\n", fanctl::kApIpAddr, wifi.sta_ip);
+	} else if (wifi.sta_connected) {
+		printk("HTTP: http://%s/\n", wifi.sta_ip);
+	} else if (wifi.ap_enabled) {
+		printk("HTTP: http://%s/\n", fanctl::kApIpAddr);
+	}
+	
 	printk("Shell: fanctl status\n");
 	printk("Config: %s\n", fanctl::settings::GetConfigRelativePath());
 	printk("Curves: %s  %s  %s  %s\n", fanctl::curves::CurveProfiles::GetAdcToVoltagePath(),
@@ -113,7 +134,8 @@ int main()
 	printk("SSH Config: %s\n", fanctl::settings::GetSshConfigRelativePath());
 	printk("Authorized Keys: %s\n", fanctl::settings::GetAuthorizedKeysRelativePath());
 	if (g_ssh_server.IsEnabled()) {
-		printk("SSH: ssh root@%s -p %d\n", fanctl::kApIpAddr, g_ssh_server.GetListenPort());
+		const char *ssh_ip = wifi.sta_connected ? wifi.sta_ip : fanctl::kApIpAddr;
+		printk("SSH: ssh root@%s -p %d\n", ssh_ip, g_ssh_server.GetListenPort());
 	}
 
 	while (true) {

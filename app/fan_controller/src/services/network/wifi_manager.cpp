@@ -65,6 +65,8 @@ WifiManager::WifiManager()
 	memset(scan_results_, 0, sizeof(scan_results_));
 	k_sem_init(&scan_sem_, 0, 1);
 	k_work_init_delayable(&ntp_sync_work_, NtpSyncWorkHandler);
+	k_work_init_delayable(&reconnect_work_, ReconnectWorkHandler);
+	reconnect_attempts_ = 0;
 }
 
 void WifiManager::NtpSyncWorkHandler(struct k_work *work)
@@ -73,6 +75,52 @@ void WifiManager::NtpSyncWorkHandler(struct k_work *work)
 	WifiManager *self = CONTAINER_OF(delayable, WifiManager, ntp_sync_work_);
 	if (self != nullptr) {
 		self->SyncTimeViaNtp();
+	}
+}
+
+void WifiManager::ReconnectWorkHandler(struct k_work *work)
+{
+	struct k_work_delayable *delayable = k_work_delayable_from_work(work);
+	WifiManager *self = CONTAINER_OF(delayable, WifiManager, reconnect_work_);
+	if (self == nullptr || self->sta_iface_ == nullptr) {
+		return;
+	}
+	
+	k_mutex_lock(&self->mutex_, K_FOREVER);
+	// Only reconnect if not already connected and have credentials
+	if (!self->sta_connected_ && self->saved_ssid_[0] != '\0') {
+		self->reconnect_attempts_++;
+		LOG_INF("WiFi STA: Reconnect attempt %d/10 to %s", 
+			self->reconnect_attempts_, self->saved_ssid_);
+		
+		char ssid[WIFI_SSID_MAX_LEN + 1];
+		char psk[WIFI_PSK_MAX_LEN + 1];
+		(void)strncpy(ssid, self->saved_ssid_, sizeof(ssid) - 1);
+		ssid[sizeof(ssid) - 1] = '\0';
+		
+		// Get PSK from settings
+		settings::WifiConfig wifi_config = {};
+		if (settings::LoadWifiConfig(&wifi_config) == 0) {
+			(void)strncpy(psk, wifi_config.sta_psk, sizeof(psk) - 1);
+			psk[sizeof(psk) - 1] = '\0';
+		} else {
+			psk[0] = '\0';
+		}
+		k_mutex_unlock(&self->mutex_);
+		
+		int rc = self->ConnectToNetwork(ssid, psk);
+		if (rc != 0) {
+			LOG_WRN("WiFi STA: Reconnect failed: %d", rc);
+			// Schedule next retry with exponential backoff
+			uint32_t delay_sec = (self->reconnect_attempts_ < 5) ? 5 : 30;
+			if (self->reconnect_attempts_ < 10) {
+				k_work_schedule(&self->reconnect_work_, K_SECONDS(delay_sec));
+			} else {
+				LOG_ERR("WiFi STA: Max reconnection attempts reached, giving up");
+			}
+		}
+	} else {
+		k_mutex_unlock(&self->mutex_);
 	}
 }
 
@@ -324,6 +372,12 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		if (sta_connected_) {
 			LOG_INF("WiFi STA: CONNECTED SUCCESSFULLY");
 			LOG_INF("  SSID: %s", saved_ssid_);
+			// Cancel any pending reconnect and reset counter
+			if (reconnect_attempts_ > 0) {
+				(void)k_work_cancel_delayable(&reconnect_work_);
+				reconnect_attempts_ = 0;
+				LOG_INF("WiFi STA: Reconnect successful, reset attempt counter");
+			}
 			if (!was_connected) {
 				schedule_ntp_sync = true;
 			}
@@ -404,6 +458,11 @@ void WifiManager::HandleEvent(struct net_mgmt_event_callback *cb, uint64_t mgmt_
 		sta_connected_ = false;
 		(void)k_work_cancel_delayable(&ntp_sync_work_);
 		LOG_INF("WiFi STA: Disconnected from AP");
+		// Schedule reconnect if we have saved credentials
+		if (saved_ssid_[0] != '\0' && reconnect_attempts_ < 10) {
+			LOG_INF("WiFi STA: Will attempt reconnect in 5 seconds...");
+			k_work_schedule(&reconnect_work_, K_SECONDS(5));
+		}
 		break;
 	case NET_EVENT_WIFI_AP_ENABLE_RESULT:
 		ap_enabled_ = true;
