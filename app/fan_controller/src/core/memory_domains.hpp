@@ -31,6 +31,7 @@ void Init();
 bool AcquireHttpBufferSet(HttpBufferSet *buffers, k_timeout_t timeout = K_NO_WAIT);
 void ReleaseHttpBufferSet(HttpBufferSet *buffers);
 bool GetHttpHeapSnapshot(HeapSnapshot *snapshot);
+bool GetPsramHeapSnapshot(HeapSnapshot *snapshot);
 
 } // namespace fanctl::memory
 

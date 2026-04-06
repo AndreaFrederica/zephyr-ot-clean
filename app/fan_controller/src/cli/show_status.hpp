@@ -15,6 +15,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/mem_stats.h>
 
+
+
 #include "core/common.hpp"
 #include "memory_domains.hpp"
 #include "http_common.hpp"
@@ -272,21 +274,31 @@ inline void WriteSystem(EmitLineFn emit, void *ctx)
 #endif
 
 	detail::EmitLinef(emit, ctx, "Memory");
+
+	/* Kernel heap (k_malloc) - used by WiFi driver, kernel objects */
+#if defined(CONFIG_HEAP_MEM_POOL_SIZE)
+	/* Kernel heap size is configured at build time */
+	detail::EmitLinef(emit, ctx, "  kernel heap size   : %d KB (CONFIG_HEAP_MEM_POOL_SIZE)", 
+		          CONFIG_HEAP_MEM_POOL_SIZE / 1024);
+	/* Note: Runtime stats for kernel heap require additional config */
+#endif
+
+	/* App heap (malloc/free) - used by application */
 #if defined(CONFIG_SYS_HEAP_RUNTIME_STATS)
-	struct sys_memory_stats heap_stats = {};
-	if (malloc_runtime_stats_get(&heap_stats) == 0) {
-		memory::HeapSnapshot libc_heap = {};
-		libc_heap.available = true;
-		libc_heap.capacity_bytes = heap_stats.free_bytes + heap_stats.allocated_bytes;
-		libc_heap.free_bytes = heap_stats.free_bytes;
-		libc_heap.allocated_bytes = heap_stats.allocated_bytes;
-		libc_heap.peak_allocated_bytes = heap_stats.max_allocated_bytes;
-		detail::EmitHeapStats(emit, ctx, "libc heap", libc_heap);
+	struct sys_memory_stats libc_heap_stats = {};
+	if (malloc_runtime_stats_get(&libc_heap_stats) == 0) {
+		memory::HeapSnapshot app_heap = {};
+		app_heap.available = true;
+		app_heap.capacity_bytes = libc_heap_stats.free_bytes + libc_heap_stats.allocated_bytes;
+		app_heap.free_bytes = libc_heap_stats.free_bytes;
+		app_heap.allocated_bytes = libc_heap_stats.allocated_bytes;
+		app_heap.peak_allocated_bytes = libc_heap_stats.max_allocated_bytes;
+		detail::EmitHeapStats(emit, ctx, "app heap", app_heap);
 	} else {
-		detail::EmitLinef(emit, ctx, "  libc heap          : unavailable");
+		detail::EmitLinef(emit, ctx, "  app heap           : unavailable");
 	}
 #else
-	detail::EmitLinef(emit, ctx, "  libc heap          : disabled");
+	detail::EmitLinef(emit, ctx, "  app heap           : disabled (CONFIG_SYS_HEAP_RUNTIME_STATS)");
 #endif
 
 	memory::HeapSnapshot http_heap = {};
@@ -580,6 +592,19 @@ inline void WriteMonitor(EmitLineFn emit, void *ctx, FanController &fan_controll
 		detail::FormatBytes(kilo_heap.free_bytes, free_text, sizeof(free_text));
 		detail::FormatBytes(kilo_heap.allocated_bytes, used_text, sizeof(used_text));
 		detail::EmitLinef(emit, ctx, "heap  kilo used=%s free=%s", used_text, free_text);
+	}
+
+	// PSRAM 总使用情况
+	memory::HeapSnapshot psram_heap = {};
+	if (memory::GetPsramHeapSnapshot(&psram_heap) && psram_heap.available) {
+		char total_text[24];
+		char free_text[24];
+		char used_text[24];
+		detail::FormatBytes(psram_heap.capacity_bytes, total_text, sizeof(total_text));
+		detail::FormatBytes(psram_heap.free_bytes, free_text, sizeof(free_text));
+		detail::FormatBytes(psram_heap.allocated_bytes, used_text, sizeof(used_text));
+		detail::EmitLinef(emit, ctx, "psram total=%s used=%s free=%s", total_text, used_text,
+				  free_text);
 	}
 
 	for (size_t i = 0U; i < kFanCount; ++i) {

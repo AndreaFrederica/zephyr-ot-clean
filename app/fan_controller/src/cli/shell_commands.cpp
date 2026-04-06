@@ -18,6 +18,7 @@
 
 #include "cli_runtime.hpp"
 #include "core/common.hpp"
+#include "htop_monitor.hpp"
 #include "kilo_editor.hpp"
 #include "line_editor.hpp"
 #include "storage.hpp"
@@ -49,6 +50,22 @@ struct ShellKiloSession {
 
 K_THREAD_STACK_DEFINE(g_kilo_stack, 12288);
 ShellKiloSession g_kilo_session = {};
+
+// htop monitor session
+struct ShellHtopSession {
+	const struct shell *sh;
+	k_mutex lock;
+	k_sem finished;
+	k_thread thread;
+	uint8_t buffer[256];
+	size_t head;
+	size_t tail;
+	size_t count;
+	bool active;
+};
+
+K_THREAD_STACK_DEFINE(g_htop_stack, 8192);
+ShellHtopSession g_htop_session = {};
 
 void UpdateShellPrompt(const struct shell *sh);
 
@@ -198,7 +215,11 @@ void KiloThreadEntry(void *ctx, void *, void *)
 	int rc = kilo::Run(io, session->path, 24, 80);
 	shell_set_bypass(session->sh, nullptr, nullptr);
 	if (rc != 0) {
-		shell_error(session->sh, "kilo exited with error: %d", rc);
+		if (rc == -EFBIG) {
+			shell_error(session->sh, "kilo file exceeds 200KB limit");
+		} else {
+			shell_error(session->sh, "kilo exited with error: %d", rc);
+		}
 	}
 
 	k_mutex_lock(&session->lock, K_FOREVER);
@@ -209,6 +230,155 @@ void KiloThreadEntry(void *ctx, void *, void *)
 	k_mutex_unlock(&session->lock);
 	UpdateShellPrompt(session->sh);
 	k_sem_give(&session->finished);
+}
+
+// ========== htop monitor implementation ==========
+
+void HtopShellWrite(void *ctx, const char *data, size_t len)
+{
+	ShellHtopSession *session = static_cast<ShellHtopSession *>(ctx);
+	if (session == nullptr || session->sh == nullptr) {
+		return;
+	}
+	shell_fprintf(session->sh, SHELL_NORMAL, "%.*s", static_cast<int>(len), data);
+}
+
+void HtopInputCallback(const struct shell *sh, uint8_t *data, size_t len, void *user_data)
+{
+	ARG_UNUSED(sh);
+
+	ShellHtopSession *session = static_cast<ShellHtopSession *>(user_data);
+	if (session == nullptr || data == nullptr || len == 0U) {
+		return;
+	}
+
+	k_mutex_lock(&session->lock, K_FOREVER);
+	for (size_t i = 0; i < len; ++i) {
+		if (session->count >= ARRAY_SIZE(session->buffer)) {
+			break;
+		}
+		session->buffer[session->head] = data[i];
+		session->head = (session->head + 1U) % ARRAY_SIZE(session->buffer);
+		session->count++;
+	}
+	k_mutex_unlock(&session->lock);
+}
+
+int HtopReadChar(void *ctx)
+{
+	ShellHtopSession *session = static_cast<ShellHtopSession *>(ctx);
+	if (session == nullptr) {
+		return -EINVAL;
+	}
+
+	while (true) {
+		k_mutex_lock(&session->lock, K_FOREVER);
+		if (session->count > 0U) {
+			uint8_t ch = session->buffer[session->tail];
+			session->tail = (session->tail + 1U) % ARRAY_SIZE(session->buffer);
+			session->count--;
+			k_mutex_unlock(&session->lock);
+			return static_cast<int>(ch);
+		}
+		bool active = session->active;
+		k_mutex_unlock(&session->lock);
+
+		if (!active) {
+			return -EIO;
+		}
+
+		k_sleep(K_MSEC(10));
+	}
+}
+
+int HtopPeekChar(void *ctx, char *ch)
+{
+	ShellHtopSession *session = static_cast<ShellHtopSession *>(ctx);
+	if (session == nullptr || ch == nullptr) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&session->lock, K_FOREVER);
+	if (session->count == 0U) {
+		k_mutex_unlock(&session->lock);
+		return 0;
+	}
+
+	*ch = static_cast<char>(session->buffer[session->tail]);
+	k_mutex_unlock(&session->lock);
+	return 1;
+}
+
+void HtopThreadEntry(void *ctx, void *, void *)
+{
+	ShellHtopSession *session = static_cast<ShellHtopSession *>(ctx);
+	if (session == nullptr || session->sh == nullptr) {
+		return;
+	}
+
+	htop::Io io = {};
+	io.read_char = HtopReadChar;
+	io.peek_char = HtopPeekChar;
+	io.write = HtopShellWrite;
+	io.ctx = session;
+
+	// 获取终端大小，使用默认值
+	int rows = 24;
+	int cols = 80;
+
+	(void)htop::Run(io, rows, cols);
+	shell_set_bypass(session->sh, nullptr, nullptr);
+
+	k_mutex_lock(&session->lock, K_FOREVER);
+	session->active = false;
+	session->count = 0U;
+	session->head = 0U;
+	session->tail = 0U;
+	k_mutex_unlock(&session->lock);
+	UpdateShellPrompt(session->sh);
+	k_sem_give(&session->finished);
+}
+
+// ========== htop command ==========
+
+int CmdHtop(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	if (sh == nullptr) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&g_htop_session.lock, K_FOREVER);
+	if (g_htop_session.active) {
+		k_mutex_unlock(&g_htop_session.lock);
+		shell_error(sh, "htop is already running");
+		return -EBUSY;
+	}
+
+	g_htop_session.sh = sh;
+	g_htop_session.head = 0U;
+	g_htop_session.tail = 0U;
+	g_htop_session.count = 0U;
+	g_htop_session.active = true;
+	k_mutex_unlock(&g_htop_session.lock);
+
+	shell_set_bypass(sh, HtopInputCallback, &g_htop_session);
+
+	// 清屏并显示启动信息
+	shell_fprintf(sh, SHELL_NORMAL, "\x1b[2J\x1b[HStarting htop... Press 'q' to quit\r\n");
+
+	k_thread_create(&g_htop_session.thread, g_htop_stack,
+			K_THREAD_STACK_SIZEOF(g_htop_stack),
+			HtopThreadEntry, &g_htop_session, nullptr, nullptr,
+			5, 0, K_NO_WAIT);
+	k_thread_name_set(&g_htop_session.thread, "htop_ui");
+
+	// 等待 htop 结束
+	k_sem_take(&g_htop_session.finished, K_FOREVER);
+
+	return 0;
 }
 
 void FillDynamicEntry(struct shell_static_entry *entry, const char *syntax, const char *help)
@@ -541,7 +711,7 @@ int CmdStorageSummary(const struct shell *sh, size_t argc, char **argv)
 	return cli::HandleStorageSummary(MakeIo(sh));
 }
 
-int CmdTop(const struct shell *sh, size_t argc, char **argv)
+int CmdSimpleTop(const struct shell *sh, size_t argc, char **argv)
 {
 	return cli::HandleTop(g_runtime, argv, static_cast<int>(argc), MakeIo(sh));
 }
@@ -801,8 +971,8 @@ SHELL_CMD_ARG_REGISTER(kilo, &dsub_paths, "kilo <path>", CmdKilo, 2, 0);
 SHELL_CMD_ARG_REGISTER(writefile, &dsub_paths, "writefile <path> <text>", CmdWriteFile, 3, 16);
 SHELL_CMD_ARG_REGISTER(wificonnect, NULL, "Wi-Fi connection utility: wificonnect [number] [password]",
 		       CmdWifiConnect, 1, 2);
-SHELL_CMD_ARG_REGISTER(top, NULL, "Live monitor: top [samples] [interval_ms]", CmdTop, 1, 2);
-SHELL_CMD_ARG_REGISTER(htop, NULL, "Live monitor alias: htop [samples] [interval_ms]", CmdTop, 1, 2);
+SHELL_CMD_ARG_REGISTER(simpletop, NULL, "Simple live monitor: simpletop [samples] [interval_ms]", CmdSimpleTop, 1, 2);
+SHELL_CMD_ARG_REGISTER(htop, NULL, "Interactive process viewer (htop)", CmdHtop, 1, 0);
 
 } // namespace
 
@@ -814,6 +984,11 @@ void Init(const ServiceContext &services)
 	k_sem_init(&g_kilo_session.data_ready, 0, UINT_MAX);
 	k_sem_init(&g_kilo_session.finished, 0, 1);
 	g_kilo_session.active = false;
+	
+	k_mutex_init(&g_htop_session.lock);
+	k_sem_init(&g_htop_session.finished, 0, 1);
+	g_htop_session.active = false;
+	
 	UpdateShellPrompt(nullptr);
 }
 

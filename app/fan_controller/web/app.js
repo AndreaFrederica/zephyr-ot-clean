@@ -30,11 +30,24 @@ const dom = {
   loadFileBtn: document.getElementById("loadFileBtn"),
   saveFileBtn: document.getElementById("saveFileBtn"),
   deleteFileBtn: document.getElementById("deleteFileBtn"),
+
+  svcCurrentState: document.getElementById("svcCurrentState"),
+  svcCurrentNote: document.getElementById("svcCurrentNote"),
+  svcAvail10: document.getElementById("svcAvail10"),
+  svcAvail60: document.getElementById("svcAvail60"),
+  svcLastLatency: document.getElementById("svcLastLatency"),
+  availabilityChart: document.getElementById("availabilityChart"),
+  latencyChart: document.getElementById("latencyChart"),
 };
 
 const fanUiState = {
   1: { dirty: false, percent: 0, targetRpm: 0 },
   2: { dirty: false, percent: 0, targetRpm: 0 },
+};
+
+const serviceStats = {
+  maxSamples: 60,
+  samples: [],
 };
 
 let refreshInFlight = false;
@@ -127,15 +140,271 @@ function shouldPreserveUserInput(element) {
   return document.activeElement === element;
 }
 
+function pushServiceSample(ok, latencyMs) {
+  serviceStats.samples.push({
+    ok,
+    latencyMs: Number.isFinite(latencyMs) ? latencyMs : null,
+    at: Date.now(),
+  });
+
+  while (serviceStats.samples.length > serviceStats.maxSamples) {
+    serviceStats.samples.shift();
+  }
+}
+
+function calcAvailability(lastCount) {
+  const samples = serviceStats.samples.slice(-lastCount);
+  if (samples.length === 0) {
+    return null;
+  }
+
+  const okCount = samples.filter((item) => item.ok).length;
+  return (okCount / samples.length) * 100;
+}
+
+function rollingAvailability(windowSize) {
+  const src = serviceStats.samples;
+  const result = [];
+
+  for (let i = 0; i < src.length; i += 1) {
+    const start = Math.max(0, i - windowSize + 1);
+    const subset = src.slice(start, i + 1);
+    const okCount = subset.filter((item) => item.ok).length;
+    result.push((okCount / subset.length) * 100);
+  }
+
+  return result;
+}
+
+function getCssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) {
+    return "--";
+  }
+
+  return `${value.toFixed(1)}%`;
+}
+
+function formatLatency(value) {
+  if (!Number.isFinite(value)) {
+    return "--";
+  }
+
+  return `${Math.round(value)} ms`;
+}
+
+function updateServiceStatsUi() {
+  const samples = serviceStats.samples;
+  const last = samples.at(-1);
+
+  dom.svcCurrentState.textContent = !last ? "--" : last.ok ? "可用" : "异常";
+  dom.svcCurrentNote.textContent = !last
+    ? "等待首个样本"
+    : last.ok
+      ? "最近一次请求成功"
+      : "最近一次请求失败";
+
+  dom.svcAvail10.textContent = formatPercent(calcAvailability(10));
+  dom.svcAvail60.textContent = formatPercent(calcAvailability(60));
+  dom.svcLastLatency.textContent = last && last.ok ? formatLatency(last.latencyMs) : "--";
+}
+
+function resizeCanvasToDisplaySize(canvas) {
+  const ratio = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width * ratio));
+  const height = Math.max(1, Math.round(rect.height * ratio));
+
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+
+  return { width, height, ratio };
+}
+
+function drawAxes(ctx, width, height, padding, yLabels) {
+  const gridColor = getCssVar("--grid-line");
+  const textColor = getCssVar("--muted");
+
+  ctx.strokeStyle = gridColor;
+  ctx.fillStyle = textColor;
+  ctx.lineWidth = 1;
+  ctx.font = "12px Segoe UI, PingFang SC, sans-serif";
+
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+
+  yLabels.forEach((label) => {
+    const y = padding.top + chartHeight * label.pos;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(padding.left + chartWidth, y);
+    ctx.stroke();
+
+    ctx.fillText(label.text, 8, y + 4);
+  });
+
+  ctx.beginPath();
+  ctx.moveTo(padding.left, padding.top);
+  ctx.lineTo(padding.left, padding.top + chartHeight);
+  ctx.lineTo(padding.left + chartWidth, padding.top + chartHeight);
+  ctx.stroke();
+}
+
+function drawLineChart(canvas, values, options) {
+  if (!canvas) {
+    return;
+  }
+
+  const ctx = canvas.getContext("2d");
+  const { width, height } = resizeCanvasToDisplaySize(canvas);
+
+  ctx.clearRect(0, 0, width, height);
+
+  const padding = {
+    left: 44,
+    right: 16,
+    top: 16,
+    bottom: 26,
+  };
+
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+
+  drawAxes(ctx, width, height, padding, options.yLabels);
+
+  if (values.length === 0) {
+    ctx.fillStyle = getCssVar("--muted");
+    ctx.font = "13px Segoe UI, PingFang SC, sans-serif";
+    ctx.fillText("暂无数据", padding.left + 10, padding.top + 20);
+    return;
+  }
+
+  const lineColor = getCssVar(options.lineColorVar);
+  const fillColor = getCssVar(options.fillColorVar);
+  const textColor = getCssVar("--muted");
+
+  const xStep = values.length > 1 ? chartWidth / (values.length - 1) : 0;
+
+  const points = values.map((value, index) => {
+    const normalized = options.normalize(value);
+    const x = padding.left + index * xStep;
+    const y = padding.top + (1 - normalized) * chartHeight;
+    return { x, y, value };
+  });
+
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) {
+      ctx.moveTo(point.x, point.y);
+    } else {
+      ctx.lineTo(point.x, point.y);
+    }
+  });
+  ctx.lineTo(points.at(-1).x, padding.top + chartHeight);
+  ctx.lineTo(points[0].x, padding.top + chartHeight);
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) {
+      ctx.moveTo(point.x, point.y);
+    } else {
+      ctx.lineTo(point.x, point.y);
+    }
+  });
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  const last = points.at(-1);
+  ctx.beginPath();
+  ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
+  ctx.fillStyle = lineColor;
+  ctx.fill();
+
+  ctx.fillStyle = textColor;
+  ctx.font = "12px Segoe UI, PingFang SC, sans-serif";
+  ctx.fillText("最旧", padding.left, height - 8);
+  ctx.fillText("最新", width - padding.right - 26, height - 8);
+}
+
+function renderServiceCharts() {
+  const availabilityValues = rollingAvailability(10);
+  drawLineChart(dom.availabilityChart, availabilityValues, {
+    lineColorVar: "--chart-line-ok",
+    fillColorVar: "--chart-fill-ok",
+    normalize: (value) => Math.max(0, Math.min(100, value)) / 100,
+    yLabels: [
+      { pos: 0, text: "100%" },
+      { pos: 0.5, text: "50%" },
+      { pos: 1, text: "0%" },
+    ],
+  });
+
+  const latencySamples = serviceStats.samples.map((item) => item.ok && Number.isFinite(item.latencyMs) ? item.latencyMs : null);
+  const validLatencies = latencySamples.filter((value) => Number.isFinite(value));
+  const maxLatency = validLatencies.length > 0
+    ? Math.max(200, Math.ceil(Math.max(...validLatencies) / 50) * 50)
+    : 200;
+
+  drawLineChart(
+    dom.latencyChart,
+    latencySamples.map((value) => (Number.isFinite(value) ? value : maxLatency)),
+    {
+      lineColorVar: "--chart-line-latency",
+      fillColorVar: "--chart-fill-latency",
+      normalize: (value) => Math.max(0, Math.min(maxLatency, value)) / maxLatency,
+      yLabels: [
+        { pos: 0, text: `${maxLatency} ms` },
+        { pos: 0.5, text: `${Math.round(maxLatency / 2)} ms` },
+        { pos: 1, text: "0 ms" },
+      ],
+    },
+  );
+}
+
+function fanPayloadFromRefs(id) {
+  const refs = fanRefs(id);
+  const body = new URLSearchParams({
+    id: String(id),
+    enabled: refs.enable.checked ? "1" : "0",
+    use_adc_target: refs.useAdcTarget.checked ? "1" : "0",
+  });
+
+  if (!refs.useAdcTarget.checked) {
+    const targetRpm = Number(refs.targetRpm.value);
+    if (!Number.isFinite(targetRpm) || targetRpm < 0) {
+      throw new Error("请输入有效的目标转速。");
+    }
+
+    body.set("target_rpm", String(Math.round(targetRpm)));
+  }
+
+  return body;
+}
+
 async function refreshStatus({ silent = false } = {}) {
   if (refreshInFlight) {
     return;
   }
 
   refreshInFlight = true;
+  const start = performance.now();
 
   try {
     const status = await requestJson("/api/status");
+    const elapsed = performance.now() - start;
+
+    pushServiceSample(true, elapsed);
+    updateServiceStatsUi();
+    renderServiceCharts();
 
     dom.apState.textContent = status.ap.enabled ? "enabled" : "disabled";
     dom.staState.textContent = status.sta.connected ? "connected" : status.sta.state;
@@ -154,6 +423,10 @@ async function refreshStatus({ silent = false } = {}) {
     dom.refreshState.textContent = "运行中";
     dom.lastRefresh.textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
   } catch (error) {
+    pushServiceSample(false, null);
+    updateServiceStatsUi();
+    renderServiceCharts();
+
     dom.refreshState.textContent = "连接失败";
     if (!silent) {
       throw error;
@@ -164,29 +437,12 @@ async function refreshStatus({ silent = false } = {}) {
 }
 
 async function saveFan(id) {
-  const refs = fanRefs(id);
-  const body = new URLSearchParams({
-    id: String(id),
-    enabled: refs.enable.checked ? "1" : "0",
-    use_adc_target: refs.useAdcTarget.checked ? "1" : "0",
-  });
-
-  if (!refs.useAdcTarget.checked) {
-    const targetRpm = Number(refs.targetRpm.value);
-    if (!Number.isFinite(targetRpm) || targetRpm < 0) {
-      window.alert("请输入有效的目标转速。");
-      return;
-    }
-
-    body.set("target_rpm", String(Math.round(targetRpm)));
-  }
-
   await requestText("/api/fan", {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
     },
-    body,
+    body: fanPayloadFromRefs(id),
   });
 
   clearFanDirty(id);
@@ -194,29 +450,12 @@ async function saveFan(id) {
 }
 
 async function saveFanDefaults(id) {
-  const refs = fanRefs(id);
-  const body = new URLSearchParams({
-    id: String(id),
-    enabled: refs.enable.checked ? "1" : "0",
-    use_adc_target: refs.useAdcTarget.checked ? "1" : "0",
-  });
-
-  if (!refs.useAdcTarget.checked) {
-    const targetRpm = Number(refs.targetRpm.value);
-    if (!Number.isFinite(targetRpm) || targetRpm < 0) {
-      window.alert("请输入有效的目标转速。");
-      return;
-    }
-
-    body.set("target_rpm", String(Math.round(targetRpm)));
-  }
-
   await requestText("/api/fan/defaults", {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
     },
-    body,
+    body: fanPayloadFromRefs(id),
   });
 
   await loadConfig();
@@ -239,7 +478,7 @@ async function saveWifi() {
 
   await refreshStatus();
   await loadConfig();
-  window.alert("Wi‑Fi 凭据已保存，设备开始尝试联网。");
+  window.alert("Wi-Fi 凭据已保存，设备开始尝试联网。");
 }
 
 async function loadNtpConfig() {
@@ -476,6 +715,10 @@ dom.saveFileBtn.addEventListener("click", () => {
 
 dom.deleteFileBtn.addEventListener("click", () => {
   void deleteFile().catch((error) => window.alert(error.message));
+});
+
+window.addEventListener("resize", () => {
+  renderServiceCharts();
 });
 
 await refreshStatus();

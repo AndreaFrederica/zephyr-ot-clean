@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include <esp_attr.h>
+#include <esp_heap_caps.h>
 
 #include "http_common.hpp"
 
@@ -128,6 +129,33 @@ bool GetHttpHeapSnapshot(HeapSnapshot *snapshot)
 	snapshot->allocated_bytes = snapshot->capacity_bytes - snapshot->free_bytes;
 	snapshot->free_bytes = snapshot->capacity_bytes - snapshot->allocated_bytes;
 	snapshot->peak_allocated_bytes = g_http_peak_allocated_bytes;
+
+	return true;
+}
+
+bool GetPsramHeapSnapshot(HeapSnapshot *snapshot)
+{
+	if (snapshot == nullptr) {
+		return false;
+	}
+
+	memset(snapshot, 0, sizeof(*snapshot));
+
+	// 获取 PSRAM 堆信息 (使用 ESP-IDF heap_caps API)
+	size_t total_size = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+	size_t free_size = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+	size_t allocated = total_size - free_size;
+
+	if (total_size == 0) {
+		// PSRAM 未启用或未初始化
+		return false;
+	}
+
+	snapshot->available = true;
+	snapshot->capacity_bytes = total_size;
+	snapshot->free_bytes = free_size;
+	snapshot->allocated_bytes = allocated;
+	snapshot->peak_allocated_bytes = 0;  // ESP-IDF 不直接提供峰值统计
 
 	return true;
 }

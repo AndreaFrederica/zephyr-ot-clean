@@ -65,7 +65,8 @@ enum HighlightType {
 
 constexpr int HL_HIGHLIGHT_STRINGS = 1 << 0;
 constexpr int HL_HIGHLIGHT_NUMBERS = 1 << 1;
-constexpr size_t kKiloHeapBytes = 4U * 1024U * 1024U;
+constexpr size_t kKiloHeapBytes = 1U * 1024U * 1024U;
+constexpr size_t kMaxEditableFileBytes = 200U * 1024U;
 constexpr size_t kReadChunkBytes = 512U;
 constexpr size_t kQueryLen = 128;
 constexpr int kQuitTimes = 3;
@@ -749,6 +750,9 @@ int Open(EditorConfig *editor, const char *filename)
 	}
 	if (entry.type != FS_DIR_ENTRY_FILE) {
 		return -EISDIR;
+	}
+	if (entry.size > kMaxEditableFileBytes) {
+		return -EFBIG;
 	}
 
 	struct fs_file_t file;

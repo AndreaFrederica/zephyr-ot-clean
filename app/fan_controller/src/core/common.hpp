@@ -17,7 +17,7 @@ constexpr int kHttpPort = 80;
 constexpr int kHttpAcceptStackSize = 4096;
 constexpr int kHttpWorkerStackSize = 6144;
 constexpr int kSshStackSize = 24576;
-constexpr int kStatusSyncStackSize = 2048;
+constexpr int kStatusSyncStackSize = 8192;
 constexpr const char *kApIpAddr = "192.168.4.1";
 constexpr const char *kApNetmask = "255.255.255.0";
 constexpr const char *kApPsk = "fancontrol123";
@@ -66,6 +66,16 @@ struct WifiScanResult {
 	enum wifi_security_type security;
 	bool valid;
 };
+
+// 前向声明（供 htop 等模块使用）
+class FanController;
+class WifiManager;
+class HostControlManager;
+
+// 全局对象外部声明
+extern FanController g_fan_controller;
+extern WifiManager g_wifi_manager;
+extern HostControlManager g_host_control;
 
 } // namespace fanctl
 

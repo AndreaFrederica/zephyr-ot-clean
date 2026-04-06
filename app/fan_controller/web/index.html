@@ -12,7 +12,7 @@
       <div>
         <p class="eyebrow">ESP32-S3 Fan Controller</p>
         <h1>双路风扇控制器</h1>
-        <p class="hero-copy">页面用于查看实时风扇遥测、设置目标转速、配置 Wi‑Fi，并直接编辑设备上的 JSON 与 LittleFS 文件。</p>
+        <p class="hero-copy">页面用于查看实时风扇遥测、设置目标转速、配置 Wi-Fi，并直接编辑设备上的 JSON 与 LittleFS 文件。</p>
       </div>
       <div class="hero-card">
         <div class="hero-label">设备入口</div>
@@ -23,6 +23,55 @@
     </header>
 
     <main class="grid">
+      <section class="card card-wide">
+        <div class="card-head">
+          <h2>服务可用度</h2>
+          <span class="badge neutral">/api/status 监测</span>
+        </div>
+        <p class="card-note">基于前端轮询结果统计最近 60 次状态刷新，用于观察接口稳定性与响应时间波动。</p>
+
+        <div class="stats-grid">
+          <div class="stat-tile">
+            <div class="stat-label">当前状态</div>
+            <div id="svcCurrentState" class="stat-value">--</div>
+            <div id="svcCurrentNote" class="stat-subtle">等待首个样本</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-label">最近 10 次可用率</div>
+            <div id="svcAvail10" class="stat-value">--</div>
+            <div class="stat-subtle">短期健康度</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-label">最近 60 次可用率</div>
+            <div id="svcAvail60" class="stat-value">--</div>
+            <div class="stat-subtle">整体健康度</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-label">最近一次响应</div>
+            <div id="svcLastLatency" class="stat-value">--</div>
+            <div class="stat-subtle">单次请求耗时</div>
+          </div>
+        </div>
+
+        <div class="chart-grid">
+          <div class="chart-block">
+            <div class="chart-head">
+              <h3>可用率趋势</h3>
+              <span class="inline-meta">按最近样本滚动计算</span>
+            </div>
+            <canvas id="availabilityChart" class="chart-canvas"></canvas>
+          </div>
+
+          <div class="chart-block">
+            <div class="chart-head">
+              <h3>响应时间趋势</h3>
+              <span class="inline-meta">单位：ms</span>
+            </div>
+            <canvas id="latencyChart" class="chart-canvas"></canvas>
+          </div>
+        </div>
+      </section>
+
       <section class="card">
         <div class="card-head">
           <h2>AP 配网</h2>
@@ -41,7 +90,7 @@
 
       <section class="card">
         <div class="card-head">
-          <h2>Wi‑Fi 凭据</h2>
+          <h2>Wi-Fi 凭据</h2>
           <span class="badge neutral">/api/wifi</span>
         </div>
         <label class="field">

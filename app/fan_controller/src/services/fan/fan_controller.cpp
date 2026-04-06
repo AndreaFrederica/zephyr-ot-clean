@@ -17,7 +17,7 @@ namespace fanctl {
 namespace {
 
 // 全局 FanController 实例指针 (用于 ISR)
-static fanctl::FanController *g_fan_controller = nullptr;
+static FanController *g_ctrl_instance = nullptr;
 
 const struct pwm_dt_spec kFanPwms[kFanCount] = {
 	PWM_DT_SPEC_GET(DT_ALIAS(fan_pwm0)),
@@ -64,7 +64,7 @@ FanController::FanController()
 	atomic_set(&control_loop_running_, 0);
 	atomic_set(&sta_connected_, 0);
 	atomic_set(&ap_enabled_, 0);
-	g_fan_controller = this;
+	g_ctrl_instance = this;
 }
 
 void FanController::InitRuntime()

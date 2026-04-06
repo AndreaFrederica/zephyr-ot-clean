@@ -425,7 +425,11 @@ int CommandSession::Execute(const char *command_line, SessionWriteFn writer, voi
 
 		rc = kilo::Run(io, resolved, 24, 80);
 		if (rc != 0) {
-			Emitf(writer, ctx, "kilo: exited with error (%d)\r\n", rc);
+			if (rc == -EFBIG) {
+				Emit(writer, ctx, "kilo: file exceeds 200KB limit\r\n");
+			} else {
+				Emitf(writer, ctx, "kilo: exited with error (%d)\r\n", rc);
+			}
 		}
 		return rc;
 	}

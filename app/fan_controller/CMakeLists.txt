@@ -69,10 +69,12 @@ add_custom_command(
 target_sources(app PRIVATE
   src/main.cpp
   src/core/memory_domains.cpp
+        src/core/fatal_reboot.cpp
   src/cli/cli_runtime.cpp
   src/cli/shell_commands.cpp
   src/cli/line_editor.cpp
-        src/cli/kilo_editor.cpp
+  src/cli/kilo_editor.cpp
+  src/cli/htop_monitor.cpp
   src/cli/command_session.cpp
   src/services/fan/curve_profiles.cpp
   src/services/storage/settings_store.cpp
