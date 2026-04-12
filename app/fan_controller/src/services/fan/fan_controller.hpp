@@ -48,6 +48,7 @@ public:
 	int SetAdcTargetMode(size_t index, bool use_adc_target, bool persist);
 	int ConfigureFan(size_t index, uint8_t percent, bool enabled, bool use_adc_target, bool persist);
 	int ConfigureFanTargetRpm(size_t index, int32_t target_rpm, bool enabled, bool persist);
+	int SetPwmConfig(size_t index, bool inverted, uint8_t min_percent, uint8_t max_percent, bool persist);
 
 	// 数据读取 (从共享内存读取，无锁)
 	void GetState(size_t index, FanState *state) const;
@@ -80,6 +81,7 @@ private:
 	enum class CommandType : uint8_t {
 		SetFan,
 		SetAdcTargetMode,
+		SetPwmConfig,
 	};
 
 	// 命令结构
@@ -90,6 +92,10 @@ private:
 		uint8_t enabled;
 		uint8_t use_adc_target;
 		bool persist;
+		// PWM配置专用字段
+		uint8_t pwm_min_percent;
+		uint8_t pwm_max_percent;
+		bool pwm_inverted;
 	};
 
 	// 100Hz 控制循环
@@ -120,6 +126,10 @@ private:
 		uint8_t percent;
 		uint8_t effective_percent;
 		uint8_t pwm_percent;
+		// PWM配置
+		bool pwm_inverted;
+		uint8_t pwm_min_percent;
+		uint8_t pwm_max_percent;
 	} runtime_state_[kFanCount];
 	
 	// 共享内存状态 (控制循环写入，其他任务读取)

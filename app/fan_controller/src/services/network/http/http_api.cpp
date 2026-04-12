@@ -1,4 +1,4 @@
-/*
+﻿/*
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -58,9 +58,15 @@ int SaveFanDefaultsFromRequest(FanController &fan_controller, const char *body)
 	char use_adc_target_buf[8];
 	char percent_buf[8];
 	char target_rpm_buf[12];
+	char pwm_inverted_buf[8];
+	char pwm_min_buf[8];
+	char pwm_max_buf[8];
 	bool has_percent = false;
 	bool has_target_rpm = false;
 	bool has_use_adc_target = false;
+	bool has_pwm_inverted = false;
+	bool has_pwm_min = false;
+	bool has_pwm_max = false;
 
 	if (!CopyKvValue(body, "id", id_buf, sizeof(id_buf)) ||
 	    !CopyKvValue(body, "enabled", enabled_buf, sizeof(enabled_buf))) {
@@ -71,6 +77,9 @@ int SaveFanDefaultsFromRequest(FanController &fan_controller, const char *body)
 	has_target_rpm = CopyKvValue(body, "target_rpm", target_rpm_buf, sizeof(target_rpm_buf));
 	has_use_adc_target =
 		CopyKvValue(body, "use_adc_target", use_adc_target_buf, sizeof(use_adc_target_buf));
+	has_pwm_inverted = CopyKvValue(body, "pwm_inverted", pwm_inverted_buf, sizeof(pwm_inverted_buf));
+	has_pwm_min = CopyKvValue(body, "pwm_min_percent", pwm_min_buf, sizeof(pwm_min_buf));
+	has_pwm_max = CopyKvValue(body, "pwm_max_percent", pwm_max_buf, sizeof(pwm_max_buf));
 
 	long id = strtol(id_buf, nullptr, 10);
 	if (id < 1 || id > static_cast<long>(kFanCount)) {
@@ -87,7 +96,10 @@ int SaveFanDefaultsFromRequest(FanController &fan_controller, const char *body)
 	bool enabled = (strcmp(enabled_buf, "1") == 0 || strcmp(enabled_buf, "true") == 0 ||
 			strcmp(enabled_buf, "on") == 0);
 	bool use_adc_target = config.fan_use_adc_target[index];
+	bool pwm_inverted = config.fan_pwm_inverted[index];
 	long percent = config.fan_percent[index];
+	long pwm_min = config.fan_pwm_min_percent[index];
+	long pwm_max = config.fan_pwm_max_percent[index];
 	long target_rpm = -1;
 
 	if (has_use_adc_target) {
@@ -95,8 +107,19 @@ int SaveFanDefaultsFromRequest(FanController &fan_controller, const char *body)
 				  strcmp(use_adc_target_buf, "true") == 0 ||
 				  strcmp(use_adc_target_buf, "on") == 0);
 	}
+	if (has_pwm_inverted) {
+		pwm_inverted = (strcmp(pwm_inverted_buf, "1") == 0 ||
+				strcmp(pwm_inverted_buf, "true") == 0 ||
+				strcmp(pwm_inverted_buf, "on") == 0);
+	}
 	if (has_percent) {
 		percent = strtol(percent_buf, nullptr, 10);
+	}
+	if (has_pwm_min) {
+		pwm_min = strtol(pwm_min_buf, nullptr, 10);
+	}
+	if (has_pwm_max) {
+		pwm_max = strtol(pwm_max_buf, nullptr, 10);
 	}
 	if (has_target_rpm) {
 		target_rpm = strtol(target_rpm_buf, nullptr, 10);
@@ -109,11 +132,17 @@ int SaveFanDefaultsFromRequest(FanController &fan_controller, const char *body)
 		percent = fan_controller.GetCurves().EvaluateRpmToPercent(static_cast<int32_t>(target_rpm));
 	}
 
-	if (percent < 0 || percent > 100) {
+	if (percent < 0 || percent > 100 || pwm_min < 0 || pwm_min > 100 || pwm_max < 0 || pwm_max > 100) {
 		return -EINVAL;
 	}
 
-	return settings::SaveFanDefaults(index, enabled, static_cast<uint8_t>(percent), use_adc_target);
+	rc = settings::SaveFanDefaults(index, enabled, static_cast<uint8_t>(percent), use_adc_target);
+	if (rc != 0) {
+		return rc;
+	}
+	
+	return settings::SaveFanPwmConfig(index, pwm_inverted,
+					  static_cast<uint8_t>(pwm_min), static_cast<uint8_t>(pwm_max));
 }
 
 } // namespace
@@ -147,12 +176,14 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 				       "\"percent\":%u,\"effective_percent\":%u,\"pwm_percent\":%u,"
 				       "\"adc_target_percent\":%u,\"actual_percent\":%u,\"adc_raw\":%d,"
 				       "\"adc_mv\":%d,\"mapped_voltage_mv\":%d,\"actual_rpm\":%d,"
-				       "\"target_rpm\":%d,\"pwm_pulse_ns\":%u},"
+				       "\"target_rpm\":%d,\"pwm_pulse_ns\":%u,"
+				       "\"pwm_inverted\":%s,\"pwm_min_percent\":%u,\"pwm_max_percent\":%u},"
 				       "{\"id\":2,\"enabled\":%s,\"use_adc_target\":%s,"
 				       "\"percent\":%u,\"effective_percent\":%u,\"pwm_percent\":%u,"
 				       "\"adc_target_percent\":%u,\"actual_percent\":%u,\"adc_raw\":%d,"
 				       "\"adc_mv\":%d,\"mapped_voltage_mv\":%d,\"actual_rpm\":%d,"
-				       "\"target_rpm\":%d,\"pwm_pulse_ns\":%u}]}",
+				       "\"target_rpm\":%d,\"pwm_pulse_ns\":%u,"
+				       "\"pwm_inverted\":%s,\"pwm_min_percent\":%u,\"pwm_max_percent\":%u}]}",
 				       wifi.ap_enabled ? "true" : "false", ap_ssid, kApPsk, kApIpAddr,
 				       wifi.ap_clients, wifi.sta_connected ? "true" : "false", sta_ssid,
 				       wifi.sta_state, wifi.sta_ip, wifi.sta_rssi,
@@ -162,12 +193,14 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 				       fans[0].adc_target_percent, fans[0].actual_percent, fans[0].adc_raw,
 				       fans[0].adc_mv, fans[0].mapped_voltage_mv, fans[0].actual_rpm,
 				       fans[0].target_rpm, static_cast<unsigned int>(fans[0].pwm_pulse_ns),
+				       fans[0].pwm_inverted ? "true" : "false", fans[0].pwm_min_percent, fans[0].pwm_max_percent,
 				       fans[1].enabled ? "true" : "false",
 				       fans[1].use_adc_target ? "true" : "false", fans[1].percent,
 				       fans[1].effective_percent, fans[1].pwm_percent,
 				       fans[1].adc_target_percent, fans[1].actual_percent, fans[1].adc_raw,
 				       fans[1].adc_mv, fans[1].mapped_voltage_mv, fans[1].actual_rpm,
-				       fans[1].target_rpm, static_cast<unsigned int>(fans[1].pwm_pulse_ns));
+				       fans[1].target_rpm, static_cast<unsigned int>(fans[1].pwm_pulse_ns),
+				       fans[1].pwm_inverted ? "true" : "false", fans[1].pwm_min_percent, fans[1].pwm_max_percent);
 
 		if (written <= 0 || static_cast<size_t>(written) >= scratch_len) {
 			(void)SendJsonResult(client, false, "status response too large");
@@ -337,16 +370,21 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 		(void)SendResponse(client, "200 OK", "application/json", "{\"ok\":true}");
 		return true;
 	}
-
 	if (strcmp(request.method, "POST") == 0 && strcmp(path, "/api/fan") == 0) {
 		char id_buf[8];
 		char enabled_buf[8];
 		char use_adc_target_buf[8];
 		char percent_buf[8];
 		char target_rpm_buf[12];
+		char pwm_inverted_buf[8];
+		char pwm_min_buf[8];
+		char pwm_max_buf[8];
 		bool has_percent = false;
 		bool has_target_rpm = false;
 		bool has_use_adc_target = false;
+		bool has_pwm_inverted = false;
+		bool has_pwm_min = false;
+		bool has_pwm_max = false;
 
 		if (!CopyKvValue(body, "id", id_buf, sizeof(id_buf)) ||
 		    !CopyKvValue(body, "enabled", enabled_buf, sizeof(enabled_buf))) {
@@ -357,26 +395,46 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 		has_target_rpm = CopyKvValue(body, "target_rpm", target_rpm_buf, sizeof(target_rpm_buf));
 		has_use_adc_target =
 			CopyKvValue(body, "use_adc_target", use_adc_target_buf, sizeof(use_adc_target_buf));
+		has_pwm_inverted = CopyKvValue(body, "pwm_inverted", pwm_inverted_buf, sizeof(pwm_inverted_buf));
+		has_pwm_min = CopyKvValue(body, "pwm_min_percent", pwm_min_buf, sizeof(pwm_min_buf));
+		has_pwm_max = CopyKvValue(body, "pwm_max_percent", pwm_max_buf, sizeof(pwm_max_buf));
 
 		long id = strtol(id_buf, nullptr, 10);
 		bool enabled = (strcmp(enabled_buf, "1") == 0 || strcmp(enabled_buf, "true") == 0 ||
 				strcmp(enabled_buf, "on") == 0);
 		FanState state = {};
 		bool use_adc_target = false;
+		bool pwm_inverted = false;
 		long percent = -1;
+		long pwm_min = -1;
+		long pwm_max = -1;
 		long target_rpm = -1;
 		if (id >= 1 && id <= static_cast<long>(kFanCount)) {
 			fan_controller.GetState(static_cast<size_t>(id - 1), &state);
 			use_adc_target = state.use_adc_target;
+			pwm_inverted = state.pwm_inverted;
 			percent = state.percent;
+			pwm_min = state.pwm_min_percent;
+			pwm_max = state.pwm_max_percent;
 		}
 		if (has_use_adc_target) {
 			use_adc_target = (strcmp(use_adc_target_buf, "1") == 0 ||
 					  strcmp(use_adc_target_buf, "true") == 0 ||
 					  strcmp(use_adc_target_buf, "on") == 0);
 		}
+		if (has_pwm_inverted) {
+			pwm_inverted = (strcmp(pwm_inverted_buf, "1") == 0 ||
+					strcmp(pwm_inverted_buf, "true") == 0 ||
+					strcmp(pwm_inverted_buf, "on") == 0);
+		}
 		if (has_percent) {
 			percent = strtol(percent_buf, nullptr, 10);
+		}
+		if (has_pwm_min) {
+			pwm_min = strtol(pwm_min_buf, nullptr, 10);
+		}
+		if (has_pwm_max) {
+			pwm_max = strtol(pwm_max_buf, nullptr, 10);
 		}
 		if (has_target_rpm) {
 			target_rpm = strtol(target_rpm_buf, nullptr, 10);
@@ -393,19 +451,33 @@ bool HandleApiRequest(int client, const Request &request, char *scratch, size_t 
 				return true;
 			}
 			rc = fan_controller.ConfigureFanTargetRpm(static_cast<size_t>(id - 1),
-							 static_cast<int32_t>(target_rpm), enabled, false);
+								 static_cast<int32_t>(target_rpm), enabled, false);
 		} else {
 			if (percent < 0 || percent > 100) {
 				(void)SendResponse(client, "400 Bad Request", "text/plain", "Invalid fan payload");
 				return true;
 			}
 			rc = fan_controller.ConfigureFan(static_cast<size_t>(id - 1),
-							 static_cast<uint8_t>(percent), enabled,
-							 use_adc_target, false);
+								 static_cast<uint8_t>(percent), enabled,
+								 use_adc_target, false);
 		}
 		if (rc != 0) {
 			(void)SendResponse(client, "400 Bad Request", "text/plain", "Invalid fan payload");
 			return true;
+		}
+		
+		// 处理PWM配置更新
+		if (has_pwm_inverted || has_pwm_min || has_pwm_max) {
+			if (pwm_min < 0 || pwm_min > 100 || pwm_max < 0 || pwm_max > 100) {
+				(void)SendResponse(client, "400 Bad Request", "text/plain", "Invalid fan payload");
+				return true;
+			}
+			rc = fan_controller.SetPwmConfig(static_cast<size_t>(id - 1), pwm_inverted,
+							 static_cast<uint8_t>(pwm_min), static_cast<uint8_t>(pwm_max), false);
+			if (rc != 0) {
+				(void)SendResponse(client, "400 Bad Request", "text/plain", "Invalid fan payload");
+				return true;
+			}
 		}
 
 		(void)SendResponse(client, "200 OK", "application/json", "{\"ok\":true}");

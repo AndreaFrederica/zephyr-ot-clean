@@ -38,6 +38,10 @@ struct FanState {
 	int32_t target_rpm;
 	uint32_t pwm_pulse_ns;
 	bool tach_valid;
+	// PWM配置
+	bool pwm_inverted;
+	uint8_t pwm_min_percent;
+	uint8_t pwm_max_percent;
 };
 
 struct WifiSnapshot {

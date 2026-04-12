@@ -21,6 +21,9 @@ void FanSharedStateInit(FanControllerSharedState *shared)
 		atomic_set(&shared->channels[i].target_rpm, 0);
 		atomic_set(&shared->channels[i].actual_percent, 0);
 		atomic_set(&shared->channels[i].use_adc_target, 0);
+		atomic_set(&shared->channels[i].pwm_inverted, 0);
+		atomic_set(&shared->channels[i].pwm_min_percent, 0);
+		atomic_set(&shared->channels[i].pwm_max_percent, 100);
 		atomic_set(&shared->channels[i].tach_edges, 0);
 		shared->last_tach_edges[i] = 0;
 	}
@@ -54,6 +57,9 @@ void FanSharedStateRead(const FanControllerSharedState *shared, size_t index, Fa
 	state->target_rpm = static_cast<int32_t>(atomic_get(&ch->target_rpm));
 	state->actual_percent = static_cast<uint8_t>(atomic_get(&ch->actual_percent));
 	state->use_adc_target = atomic_get(&ch->use_adc_target) != 0;
+	state->pwm_inverted = atomic_get(&ch->pwm_inverted) != 0;
+	state->pwm_min_percent = static_cast<uint8_t>(atomic_get(&ch->pwm_min_percent));
+	state->pwm_max_percent = static_cast<uint8_t>(atomic_get(&ch->pwm_max_percent));
 	state->tach_valid = true;
 }
 
@@ -107,6 +113,26 @@ bool FanSharedStateReadUseAdcTarget(const FanChannelSharedState *ch)
 void FanSharedStateWriteConfig(FanChannelSharedState *ch, bool use_adc_target)
 {
 	atomic_set(&ch->use_adc_target, use_adc_target ? 1 : 0);
+}
+
+void FanSharedStateWritePwmConfig(FanChannelSharedState *ch, bool inverted, uint8_t min_percent, uint8_t max_percent)
+{
+	atomic_set(&ch->pwm_inverted, inverted ? 1 : 0);
+	atomic_set(&ch->pwm_min_percent, min_percent);
+	atomic_set(&ch->pwm_max_percent, max_percent);
+}
+
+void FanSharedStateReadPwmConfig(const FanChannelSharedState *ch, bool *inverted, uint8_t *min_percent, uint8_t *max_percent)
+{
+	if (inverted != nullptr) {
+		*inverted = atomic_get(&ch->pwm_inverted) != 0;
+	}
+	if (min_percent != nullptr) {
+		*min_percent = static_cast<uint8_t>(atomic_get(&ch->pwm_min_percent));
+	}
+	if (max_percent != nullptr) {
+		*max_percent = static_cast<uint8_t>(atomic_get(&ch->pwm_max_percent));
+	}
 }
 
 } // namespace fanctl

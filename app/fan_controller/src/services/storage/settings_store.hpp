@@ -18,6 +18,9 @@ struct AppConfig {
 	bool fan_enabled[kFanCount];
 	uint8_t fan_percent[kFanCount];
 	bool fan_use_adc_target[kFanCount];
+	bool fan_pwm_inverted[kFanCount];
+	uint8_t fan_pwm_min_percent[kFanCount];
+	uint8_t fan_pwm_max_percent[kFanCount];
 	bool host_alive_check_enabled;
 	uint32_t host_alive_timeout_ms;
 };
@@ -88,6 +91,7 @@ void SaveFanState(size_t index, bool enabled, uint8_t percent);
 int LoadFanAdcTargetMode(size_t index, bool *use_adc_target);
 void SaveFanAdcTargetMode(size_t index, bool use_adc_target);
 int SaveFanDefaults(size_t index, bool enabled, uint8_t percent, bool use_adc_target);
+int SaveFanPwmConfig(size_t index, bool inverted, uint8_t min_percent, uint8_t max_percent);
 int FactoryReset();
 
 } // namespace fanctl::settings

@@ -53,6 +53,25 @@ constexpr const char *kFieldDefinitionsJson = R"json({
     "default": false,
     "description": "Use calibrated ADC feedback voltage to derive fan 1 target percent."
   },
+  "fans.fan1.pwm_inverted": {
+    "type": "boolean",
+    "default": false,
+    "description": "Invert PWM output polarity for fan 1."
+  },
+  "fans.fan1.pwm_min_percent": {
+    "type": "integer",
+    "default": 0,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Minimum PWM duty cycle for fan 1."
+  },
+  "fans.fan1.pwm_max_percent": {
+    "type": "integer",
+    "default": 100,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Maximum PWM duty cycle for fan 1."
+  },
   "fans.fan2.enabled": {
     "type": "boolean",
     "default": true,
@@ -69,6 +88,25 @@ constexpr const char *kFieldDefinitionsJson = R"json({
     "type": "boolean",
     "default": false,
     "description": "Use calibrated ADC feedback voltage to derive fan 2 target percent."
+  },
+  "fans.fan2.pwm_inverted": {
+    "type": "boolean",
+    "default": false,
+    "description": "Invert PWM output polarity for fan 2."
+  },
+  "fans.fan2.pwm_min_percent": {
+    "type": "integer",
+    "default": 0,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Minimum PWM duty cycle for fan 2."
+  },
+  "fans.fan2.pwm_max_percent": {
+    "type": "integer",
+    "default": 100,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Maximum PWM duty cycle for fan 2."
   },
   "host.alive_check_enabled": {
     "type": "boolean",
@@ -328,6 +366,9 @@ void FillDefaults(AppConfig *config)
 		config->fan_enabled[i] = true;
 		config->fan_percent[i] = 40;
 		config->fan_use_adc_target[i] = false;
+		config->fan_pwm_inverted[i] = false;
+		config->fan_pwm_min_percent[i] = 0;
+		config->fan_pwm_max_percent[i] = 100;
 	}
 	config->host_alive_check_enabled = false;
 	config->host_alive_timeout_ms = 5000U;
@@ -387,12 +428,18 @@ int BuildJson(const AppConfig *config, char *json, size_t json_len)
 		"    \"fan1\": {\n"
 		"      \"enabled\": %s,\n"
 		"      \"percent\": %u,\n"
-		"      \"use_adc_target\": %s\n"
+		"      \"use_adc_target\": %s,\n"
+		"      \"pwm_inverted\": %s,\n"
+		"      \"pwm_min_percent\": %u,\n"
+		"      \"pwm_max_percent\": %u\n"
 		"    },\n"
 		"    \"fan2\": {\n"
 		"      \"enabled\": %s,\n"
 		"      \"percent\": %u,\n"
-		"      \"use_adc_target\": %s\n"
+		"      \"use_adc_target\": %s,\n"
+		"      \"pwm_inverted\": %s,\n"
+		"      \"pwm_min_percent\": %u,\n"
+		"      \"pwm_max_percent\": %u\n"
 		"    }\n"
 		"  }\n"
 		"}\n",
@@ -400,8 +447,12 @@ int BuildJson(const AppConfig *config, char *json, size_t json_len)
 		static_cast<unsigned int>(config->host_alive_timeout_ms),
 		config->fan_enabled[0] ? "true" : "false", config->fan_percent[0],
 		config->fan_use_adc_target[0] ? "true" : "false",
+		config->fan_pwm_inverted[0] ? "true" : "false",
+		config->fan_pwm_min_percent[0], config->fan_pwm_max_percent[0],
 		config->fan_enabled[1] ? "true" : "false", config->fan_percent[1],
-		config->fan_use_adc_target[1] ? "true" : "false");
+		config->fan_use_adc_target[1] ? "true" : "false",
+		config->fan_pwm_inverted[1] ? "true" : "false",
+		config->fan_pwm_min_percent[1], config->fan_pwm_max_percent[1]);
 
 	return (written > 0 && static_cast<size_t>(written) < json_len) ? 0 : -ENOSPC;
 }
@@ -573,6 +624,23 @@ int ParseJson(const char *json, AppConfig *config)
 			return -EINVAL;
 		}
 	}
+	if (FindJsonKey(fan1_section, "pwm_inverted", &value)) {
+		if (!ParseJsonBoolAt(value, &parsed.fan_pwm_inverted[0])) {
+			return -EINVAL;
+		}
+	}
+	if (FindJsonKey(fan1_section, "pwm_min_percent", &value)) {
+		if (!ParseJsonIntAt(value, &percent) || percent < 0 || percent > 100) {
+			return -EINVAL;
+		}
+		parsed.fan_pwm_min_percent[0] = static_cast<uint8_t>(percent);
+	}
+	if (FindJsonKey(fan1_section, "pwm_max_percent", &value)) {
+		if (!ParseJsonIntAt(value, &percent) || percent < 0 || percent > 100) {
+			return -EINVAL;
+		}
+		parsed.fan_pwm_max_percent[0] = static_cast<uint8_t>(percent);
+	}
 
 	if (!FindJsonKey(json, "fan2", &fan2_section) || !FindJsonKey(fan2_section, "enabled", &value) ||
 	    !ParseJsonBoolAt(value, &parsed.fan_enabled[1])) {
@@ -588,6 +656,23 @@ int ParseJson(const char *json, AppConfig *config)
 		if (!ParseJsonBoolAt(value, &parsed.fan_use_adc_target[1])) {
 			return -EINVAL;
 		}
+	}
+	if (FindJsonKey(fan2_section, "pwm_inverted", &value)) {
+		if (!ParseJsonBoolAt(value, &parsed.fan_pwm_inverted[1])) {
+			return -EINVAL;
+		}
+	}
+	if (FindJsonKey(fan2_section, "pwm_min_percent", &value)) {
+		if (!ParseJsonIntAt(value, &percent) || percent < 0 || percent > 100) {
+			return -EINVAL;
+		}
+		parsed.fan_pwm_min_percent[1] = static_cast<uint8_t>(percent);
+	}
+	if (FindJsonKey(fan2_section, "pwm_max_percent", &value)) {
+		if (!ParseJsonIntAt(value, &percent) || percent < 0 || percent > 100) {
+			return -EINVAL;
+		}
+		parsed.fan_pwm_max_percent[1] = static_cast<uint8_t>(percent);
 	}
 
 	*config = parsed;
@@ -1303,6 +1388,23 @@ int SaveFanDefaults(size_t index, bool enabled, uint8_t percent, bool use_adc_ta
 	config.fan_enabled[index] = enabled;
 	config.fan_percent[index] = MIN(percent, 100U);
 	config.fan_use_adc_target[index] = use_adc_target;
+	return SaveConfig(&config);
+}
+
+int SaveFanPwmConfig(size_t index, bool inverted, uint8_t min_percent, uint8_t max_percent)
+{
+	if (index >= kFanCount) {
+		return -EINVAL;
+	}
+
+	AppConfig config = {};
+	if (LoadConfig(&config) != 0) {
+		FillDefaults(&config);
+	}
+
+	config.fan_pwm_inverted[index] = inverted;
+	config.fan_pwm_min_percent[index] = MIN(min_percent, 100U);
+	config.fan_pwm_max_percent[index] = MIN(max_percent, 100U);
 	return SaveConfig(&config);
 }
 

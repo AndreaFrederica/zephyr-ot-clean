@@ -18,7 +18,7 @@ struct CurvePoint {
 class CurveProfiles {
 public:
 	struct CurveData {
-		CurvePoint points[16];
+		CurvePoint points[32];
 		size_t point_count;
 	};
 

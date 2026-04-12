@@ -1,0 +1,13 @@
+{
+  "kind": "voltage_to_percent",
+  "fit": "piecewise_linear",
+  "input_unit": "mv",
+  "output_unit": "percent",
+  "points": [
+    [0, 15],
+    [825, 36],
+    [1650, 58],
+    [2475, 79],
+    [3300, 100]
+  ]
+}

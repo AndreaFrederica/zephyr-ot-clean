@@ -8,12 +8,18 @@
     "fan1": {
       "enabled": true,
       "percent": 40,
-      "use_adc_target": false
+      "use_adc_target": false,
+      "pwm_inverted": false,
+      "pwm_min_percent": 0,
+      "pwm_max_percent": 100
     },
     "fan2": {
       "enabled": true,
       "percent": 40,
-      "use_adc_target": false
+      "use_adc_target": false,
+      "pwm_inverted": false,
+      "pwm_min_percent": 0,
+      "pwm_max_percent": 100
     }
   }
 }

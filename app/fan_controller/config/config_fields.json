@@ -22,6 +22,25 @@
     "default": false,
     "description": "Use calibrated ADC feedback voltage to derive fan 1 target percent."
   },
+  "fans.fan1.pwm_inverted": {
+    "type": "boolean",
+    "default": false,
+    "description": "Invert PWM output polarity for fan 1."
+  },
+  "fans.fan1.pwm_min_percent": {
+    "type": "integer",
+    "default": 0,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Minimum PWM duty cycle for fan 1."
+  },
+  "fans.fan1.pwm_max_percent": {
+    "type": "integer",
+    "default": 100,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Maximum PWM duty cycle for fan 1."
+  },
   "fans.fan2.enabled": {
     "type": "boolean",
     "default": true,
@@ -38,6 +57,25 @@
     "type": "boolean",
     "default": false,
     "description": "Use calibrated ADC feedback voltage to derive fan 2 target percent."
+  },
+  "fans.fan2.pwm_inverted": {
+    "type": "boolean",
+    "default": false,
+    "description": "Invert PWM output polarity for fan 2."
+  },
+  "fans.fan2.pwm_min_percent": {
+    "type": "integer",
+    "default": 0,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Minimum PWM duty cycle for fan 2."
+  },
+  "fans.fan2.pwm_max_percent": {
+    "type": "integer",
+    "default": 100,
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Maximum PWM duty cycle for fan 2."
   },
   "host.alive_check_enabled": {
     "type": "boolean",

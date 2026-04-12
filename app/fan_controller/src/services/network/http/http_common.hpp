@@ -14,7 +14,7 @@ constexpr size_t kRecvBufferHeadroom = 3U * 1024U;
 constexpr size_t kRecvBufferSize = kMaxRequestBodySize + kRecvBufferHeadroom;
 constexpr size_t kLargeBufferSize = 65536;
 constexpr size_t kStatusBufferSize = 2048;
-constexpr size_t kWorkerCount = 4;
+constexpr size_t kWorkerCount = 1;
 constexpr size_t kClientQueueDepth = 8;
 constexpr int kHttpBacklog = 8;
 

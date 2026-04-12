@@ -59,7 +59,7 @@ FanController::FanController()
 	  control_stack_ptr_(nullptr)
 {
 	for (size_t i = 0; i < kFanCount; ++i) {
-		runtime_state_[i] = { true, false, 40, 40, 40 };
+		runtime_state_[i] = { true, false, 40, 40, 40, false, 0, 100 };
 	}
 	atomic_set(&control_loop_running_, 0);
 	atomic_set(&sta_connected_, 0);
@@ -170,9 +170,14 @@ void FanController::LoadPersistedState()
 			runtime_state_[i].enabled = config.fan_enabled[i];
 			runtime_state_[i].percent = MIN(config.fan_percent[i], 100U);
 			runtime_state_[i].use_adc_target = config.fan_use_adc_target[i];
+			runtime_state_[i].pwm_inverted = config.fan_pwm_inverted[i];
+			runtime_state_[i].pwm_min_percent = MIN(config.fan_pwm_min_percent[i], 100U);
+			runtime_state_[i].pwm_max_percent = MIN(config.fan_pwm_max_percent[i], 100U);
 		}
 		// 同步到共享内存
 		FanSharedStateWriteConfig(&shared_state_.channels[i], runtime_state_[i].use_adc_target);
+		FanSharedStateWritePwmConfig(&shared_state_.channels[i], runtime_state_[i].pwm_inverted,
+					     runtime_state_[i].pwm_min_percent, runtime_state_[i].pwm_max_percent);
 	}
 
 	LOG_INF("Loaded persisted state (loaded=%s)", loaded ? "yes" : "no");
@@ -286,6 +291,19 @@ void FanController::ProcessCommands()
 						  runtime_state_[cmd.index].use_adc_target);
 			if (cmd.persist) {
 				settings::SaveFanAdcTargetMode(cmd.index, cmd.use_adc_target != 0);
+			}
+			break;
+
+		case CommandType::SetPwmConfig:
+			runtime_state_[cmd.index].pwm_inverted = cmd.pwm_inverted;
+			runtime_state_[cmd.index].pwm_min_percent = MIN(cmd.pwm_min_percent, 100U);
+			runtime_state_[cmd.index].pwm_max_percent = MIN(cmd.pwm_max_percent, 100U);
+			FanSharedStateWritePwmConfig(&shared_state_.channels[cmd.index], cmd.pwm_inverted,
+						     runtime_state_[cmd.index].pwm_min_percent,
+						     runtime_state_[cmd.index].pwm_max_percent);
+			if (cmd.persist) {
+				settings::SaveFanPwmConfig(cmd.index, cmd.pwm_inverted,
+							   cmd.pwm_min_percent, cmd.pwm_max_percent);
 			}
 			break;
 		}
@@ -419,10 +437,23 @@ int FanController::ApplyPwmLocked(size_t index)
 	RuntimeState &rt = runtime_state_[index];
 	FanChannelSharedState *ch = &shared_state_.channels[index];
 
+	// 应用PWM上下限和反转
+	uint8_t constrained_pwm = rt.pwm_percent;
+	if (constrained_pwm < rt.pwm_min_percent) {
+		constrained_pwm = rt.pwm_min_percent;
+	}
+	if (constrained_pwm > rt.pwm_max_percent) {
+		constrained_pwm = rt.pwm_max_percent;
+	}
+	
+	if (rt.pwm_inverted) {
+		constrained_pwm = 100U - constrained_pwm;
+	}
+
 	uint32_t pulse = 0;
 	if (rt.enabled) {
 		pulse = static_cast<uint32_t>((static_cast<uint64_t>(channels_[index].pwm.period) *
-					       rt.pwm_percent) / 100U);
+					       constrained_pwm) / 100U);
 	}
 
 	int rc = gpio_pin_set_dt(&channels_[index].power, rt.enabled ? 1 : 0);
@@ -525,6 +556,24 @@ int FanController::ConfigureFanTargetRpm(size_t index, int32_t target_rpm, bool 
 
 	uint8_t percent = curves_.EvaluateRpmToPercent(target_rpm);
 	return ConfigureFan(index, percent, enabled, false, persist);
+}
+
+int FanController::SetPwmConfig(size_t index, bool inverted, uint8_t min_percent,
+				uint8_t max_percent, bool persist)
+{
+	if (index >= kFanCount) {
+		return -EINVAL;
+	}
+
+	Command cmd = {};
+	cmd.type = CommandType::SetPwmConfig;
+	cmd.index = static_cast<uint8_t>(index);
+	cmd.pwm_inverted = inverted;
+	cmd.pwm_min_percent = MIN(min_percent, 100U);
+	cmd.pwm_max_percent = MIN(max_percent, 100U);
+	cmd.persist = persist;
+
+	return k_msgq_put(&command_queue_, &cmd, K_MSEC(100));
 }
 
 void FanController::GetState(size_t index, FanState *state) const

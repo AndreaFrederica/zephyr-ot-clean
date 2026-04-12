@@ -39,6 +39,9 @@ struct FanChannelSharedState {
 	
 	// 配置 (由控制循环读取/写入)
 	atomic_t use_adc_target;    // 是否使用 ADC 目标模式
+	atomic_t pwm_inverted;      // PWM输出是否反转
+	atomic_t pwm_min_percent;   // PWM最小百分比
+	atomic_t pwm_max_percent;   // PWM最大百分比
 	
 	// 原始脉冲计数 (由 ISR 写入，控制循环读取)
 	atomic_t tach_edges;        // 脉冲边沿计数
@@ -125,6 +128,16 @@ bool FanSharedStateReadUseAdcTarget(const FanChannelSharedState *ch);
  * @brief 控制循环内部使用：写入配置
  */
 void FanSharedStateWriteConfig(FanChannelSharedState *ch, bool use_adc_target);
+
+/**
+ * @brief 控制循环内部使用：写入PWM配置
+ */
+void FanSharedStateWritePwmConfig(FanChannelSharedState *ch, bool inverted, uint8_t min_percent, uint8_t max_percent);
+
+/**
+ * @brief 控制循环内部使用：读取PWM配置
+ */
+void FanSharedStateReadPwmConfig(const FanChannelSharedState *ch, bool *inverted, uint8_t *min_percent, uint8_t *max_percent);
 
 } // namespace fanctl
 
