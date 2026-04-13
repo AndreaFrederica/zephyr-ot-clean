@@ -1,0 +1,6 @@
+board:
+  name: stm32f103_ot_sensor
+  full_name: STM32F103 OT Sensor Board
+  vendor: others
+  socs:
+    - name: stm32f103xb

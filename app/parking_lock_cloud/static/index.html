@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Parking Lock Cloud</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Parking Lock Cloud</h1>
+    <div class="actions">
+      <button id="soundBtn">启用警示音</button>
+      <button id="refreshBtn">刷新</button>
+      <span id="statusText">初始化中...</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>在线节点</h2>
+      <div id="onlineCount" class="subtle">0 个在线节点</div>
+      <div id="cards" class="cards"></div>
+    </section>
+
+    <section class="panel">
+      <h2>最近事件</h2>
+      <ul id="events" class="events"></ul>
+    </section>
+  </main>
+
+  <template id="nodeCardTpl">
+    <article class="card">
+      <div class="card-head">
+        <h3 class="node-title"></h3>
+        <span class="badge online">ONLINE</span>
+      </div>
+      <div class="metrics"></div>
+      <div class="controls">
+        <button class="btn-get">刷新节点</button>
+        <button class="btn-lock">锁定</button>
+        <button class="btn-unlock">解锁</button>
+      </div>
+    </article>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

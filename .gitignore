@@ -6,3 +6,4 @@
 build/
 walle_g_build/*
 build_*/
+.history/

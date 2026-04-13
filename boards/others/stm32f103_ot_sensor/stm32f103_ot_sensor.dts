@@ -1,0 +1,97 @@
+/dts-v1/;
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <st/f1/stm32f103X8.dtsi>
+#include <st/f1/stm32f103r(8-b)tx-pinctrl.dtsi>
+
+/ {
+	model = "STM32F103 OT Sensor Board";
+	compatible = "others,stm32f103-ot-sensor";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+	};
+
+	aliases {
+		led0 = &user_led;
+		rs485-uart = &usart3;
+		aux-pwm = &pwm2;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		user_led: led_0 {
+			gpios = <&gpioc 13 GPIO_ACTIVE_LOW>;
+			label = "User LED";
+		};
+	};
+
+	zephyr,user {
+		dht-gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>;
+		flame-do-gpios = <&gpioa 4 GPIO_ACTIVE_HIGH>;
+		io-channels = <&adc1 5>;
+		pwms = <&pwm2 2 PWM_USEC(20000) PWM_POLARITY_NORMAL>;
+	};
+
+	dht0: dht0 {
+		compatible = "aosong,dht";
+		dio-gpios = <&gpiob 12 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+		status = "okay";
+	};
+};
+
+&clk_hse {
+	clock-frequency = <DT_FREQ_M(8)>;
+	status = "okay";
+};
+
+&pll {
+	mul = <9>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <DT_FREQ_M(72)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <2>;
+	apb2-prescaler = <1>;
+};
+
+&usart3 {
+	pinctrl-0 = <&usart3_tx_pb10 &usart3_rx_pb11>;
+	pinctrl-names = "default";
+	current-speed = <57600>;
+	status = "okay";
+};
+
+&adc1 {
+	pinctrl-0 = <&adc1_in5_pa5>;
+	pinctrl-names = "default";
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@5 {
+		reg = <5>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&timers2 {
+	st,prescaler = <255>;
+	status = "okay";
+
+	pwm2: pwm {
+		status = "okay";
+		pinctrl-0 = <&tim2_ch2_pwm_out_pa1>;
+		pinctrl-names = "default";
+	};
+};

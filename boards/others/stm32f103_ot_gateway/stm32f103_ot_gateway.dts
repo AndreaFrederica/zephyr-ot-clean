@@ -1,0 +1,77 @@
+/dts-v1/;
+#include <st/f1/stm32f103X8.dtsi>
+#include <st/f1/stm32f103r(8-b)tx-pinctrl.dtsi>
+
+/ {
+	model = "STM32F103 OT Gateway Board";
+	compatible = "others,stm32f103-ot-gateway";
+
+	chosen {
+		zephyr,console = &usart3;
+		zephyr,shell-uart = &usart3;
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+	};
+
+	aliases {
+		led0 = &user_led;
+		rs485-uart = &usart3;
+		screen-uart = &usart1;
+		wifi-uart = &usart2;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		user_led: led_0 {
+			gpios = <&gpioc 13 GPIO_ACTIVE_LOW>;
+			label = "User LED";
+		};
+	};
+
+	zephyr,user {
+		rs485-uart = <&usart3>;
+		screen-uart = <&usart1>;
+		wifi-uart = <&usart2>;
+	};
+};
+
+&clk_hse {
+	clock-frequency = <DT_FREQ_M(8)>;
+	status = "okay";
+};
+
+&pll {
+	mul = <9>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <DT_FREQ_M(72)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <2>;
+	apb2-prescaler = <1>;
+};
+
+&usart1 {
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&usart2 {
+	pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&usart3 {
+	pinctrl-0 = <&usart3_tx_pb10 &usart3_rx_pb11>;
+	pinctrl-names = "default";
+	current-speed = <57600>;
+	status = "okay";
+};

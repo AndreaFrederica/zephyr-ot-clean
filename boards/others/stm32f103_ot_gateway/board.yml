@@ -1,0 +1,6 @@
+board:
+  name: stm32f103_ot_gateway
+  full_name: STM32F103 OT Gateway Board
+  vendor: others
+  socs:
+    - name: stm32f103xb
