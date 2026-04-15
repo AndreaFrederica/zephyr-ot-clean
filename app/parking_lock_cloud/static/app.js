@@ -4,6 +4,7 @@ const statusTextEl = document.getElementById("statusText");
 const onlineCountEl = document.getElementById("onlineCount");
 const refreshBtn = document.getElementById("refreshBtn");
 const soundBtn = document.getElementById("soundBtn");
+const themeBtn = document.getElementById("themeBtn");
 const cardTpl = document.getElementById("nodeCardTpl");
 const FLAME_MAX_MV = 3300;
 const TEMP_MIN_C = 0;
@@ -13,6 +14,42 @@ let ws = null;
 let alarmEnabled = false;
 let audioCtx = null;
 let lastAlarmAt = 0;
+
+// 自动重试状态
+const pendingLocks = new Map();
+const lastUpdatedAt = new Map();
+const LOCK_MAX_RETRIES = 20;
+
+// 主题
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  themeBtn.textContent = theme === "dark" ? "☀️" : "🌙";
+}
+
+function initTheme() {
+  const saved = localStorage.getItem("parking_lock_theme");
+  if (saved === "dark" || saved === "light") {
+    applyTheme(saved);
+    return;
+  }
+  const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  applyTheme(prefersDark ? "dark" : "light");
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute("data-theme") || "light";
+  const next = current === "dark" ? "light" : "dark";
+  applyTheme(next);
+  localStorage.setItem("parking_lock_theme", next);
+}
+
+if (window.matchMedia) {
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+    if (!localStorage.getItem("parking_lock_theme")) {
+      applyTheme(e.matches ? "dark" : "light");
+    }
+  });
+}
 
 async function getJson(url) {
   const resp = await fetch(url);
@@ -59,7 +96,6 @@ function numberValue(text, fallback = 0) {
 function flameRiskPercent(valueText) {
   const v = Number(valueText);
   if (!Number.isFinite(v)) return 100;
-  // 3300 = 无火，越低风险越高
   return clamp(Math.round(((FLAME_MAX_MV - v) / FLAME_MAX_MV) * 100), 0, 100);
 }
 
@@ -134,12 +170,15 @@ function renderNodes(nodes) {
     ].join("");
 
     root.querySelector(".btn-get").addEventListener("click", async () => {
+      pendingLocks.delete(node.node_id);
       await sendCommand(node.node_id, "GET", null);
     });
     root.querySelector(".btn-lock").addEventListener("click", async () => {
+      pendingLocks.set(node.node_id, { expectedValue: "1", retriesLeft: LOCK_MAX_RETRIES });
       await sendCommand(node.node_id, "LOCK", 1);
     });
     root.querySelector(".btn-unlock").addEventListener("click", async () => {
+      pendingLocks.set(node.node_id, { expectedValue: "0", retriesLeft: LOCK_MAX_RETRIES });
       await sendCommand(node.node_id, "LOCK", 0);
     });
     cardsEl.appendChild(fragment);
@@ -165,12 +204,53 @@ async function sendCommand(nodeId, action, value) {
   }
 }
 
+function checkPendingLocks(nodes, changedNodeIds) {
+  for (const node of nodes) {
+    const pending = pendingLocks.get(node.node_id);
+    if (!pending) continue;
+
+    if (String(node.lock_state) === pending.expectedValue) {
+      pendingLocks.delete(node.node_id);
+      statusTextEl.textContent = `节点${node.node_id} 锁状态已达成 ${lockText(pending.expectedValue)}`;
+      continue;
+    }
+
+    // 只有该节点收到了自然回包（updated_at 有更新）时才消耗重试次数；
+    // ACK 执行回执不会更新 updated_at，因此不会误触发重试。
+    if (!changedNodeIds.has(node.node_id)) {
+      continue;
+    }
+
+    if (pending.retriesLeft > 0) {
+      pending.retriesLeft -= 1;
+      const value = Number(pending.expectedValue);
+      statusTextEl.textContent = `重试 LOCK -> 节点${node.node_id} (剩余${pending.retriesLeft}次)`;
+      sendCommand(node.node_id, "LOCK", value);
+    } else {
+      pendingLocks.delete(node.node_id);
+      statusTextEl.textContent = `节点${node.node_id} 自动重试结束，未达成目标状态`;
+    }
+  }
+}
+
 function applySnapshot(snapshot) {
   if (!snapshot) return;
   const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
   const events = Array.isArray(snapshot.events) ? snapshot.events : [];
+
+  // 过滤：只有自然回包（REPORT/OFFLINE）会更新节点的 updated_at；
+  // ACK 等执行回执不会更新。用 updated_at 变化来判断是否收到了新的自然回包。
+  const changedNodeIds = new Set();
+  for (const node of nodes) {
+    if (lastUpdatedAt.has(node.node_id) && lastUpdatedAt.get(node.node_id) !== node.updated_at) {
+      changedNodeIds.add(node.node_id);
+    }
+    lastUpdatedAt.set(node.node_id, node.updated_at);
+  }
+
   renderNodes(nodes);
   renderEvents(events);
+  checkPendingLocks(nodes, changedNodeIds);
 
   const mqttMark = snapshot.mqtt_connected ? "MQTT OK" : "MQTT OFF";
   statusTextEl.textContent = `实时更新 ${new Date().toLocaleTimeString()} | ${mqttMark}`;
@@ -264,6 +344,7 @@ async function refreshAll() {
 }
 
 refreshBtn.addEventListener("click", refreshAll);
+themeBtn.addEventListener("click", toggleTheme);
 soundBtn.addEventListener("click", async () => {
   try {
     ensureAudio();
@@ -277,6 +358,7 @@ soundBtn.addEventListener("click", async () => {
   }
 });
 
+initTheme();
 refreshAll();
 connectWs();
 setInterval(refreshAll, 30000);

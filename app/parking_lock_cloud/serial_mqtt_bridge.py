@@ -16,6 +16,31 @@ def to_serial_line(action: str, node_id: int, value: int | None) -> str | None:
     return None
 
 
+def parse_command_payload(payload: str) -> tuple[str | None, str | None]:
+    payload = payload.strip()
+    if not payload:
+        return None, None
+
+    if payload.startswith("CMD,"):
+        parts = payload.split(",")
+        if len(parts) == 5 and parts[2].upper() == "LOCK" and parts[4] in {"0", "1"}:
+            return parts[1], f"LOCK,{parts[3]},{parts[4]}"
+        if len(parts) == 4 and parts[2].upper() == "GET":
+            return parts[1], f"GET,{parts[3]}"
+        return (parts[1] if len(parts) > 1 else None), None
+
+    try:
+        data = json.loads(payload)
+        cmd_id = str(data["command_id"])
+        node_id = int(data["node_id"])
+        action = str(data["action"])
+        value = data.get("value")
+    except Exception:
+        return None, None
+
+    return cmd_id, to_serial_line(action, node_id, value)
+
+
 class Bridge:
     def __init__(
         self,
@@ -52,17 +77,11 @@ class Bridge:
     def on_mqtt_message(self, client: mqtt.Client, userdata: object, msg: mqtt.MQTTMessage) -> None:
         payload = msg.payload.decode(errors="ignore").strip()
         print(f"[MQTT RX] {payload}")
-        try:
-            data = json.loads(payload)
-            cmd_id = str(data["command_id"])
-            node_id = int(data["node_id"])
-            action = str(data["action"])
-            value = data.get("value")
-        except Exception as exc:
-            print(f"[WARN] bad command payload: {exc}")
+        cmd_id, line = parse_command_payload(payload)
+        if cmd_id is None and line is None:
+            print("[WARN] bad command payload")
             return
 
-        line = to_serial_line(action, node_id, value)
         if line is None:
             self._publish_ack(cmd_id, "failed", "bad_command")
             return
@@ -77,11 +96,10 @@ class Bridge:
         print(f"[SER TX] {line}")
         self._publish_ack(cmd_id, "sent", "serial_written")
 
-    def _publish_ack(self, command_id: str, status: str, detail: str) -> None:
-        payload = json.dumps(
-            {"command_id": command_id, "status": status, "detail": detail},
-            ensure_ascii=False,
-        )
+    def _publish_ack(self, command_id: str | None, status: str, detail: str) -> None:
+        if not command_id:
+            return
+        payload = f"ACK,{command_id},{status},{detail}"
         self.mqtt.publish(self.topic_cmd_ack, payload=payload, qos=1, retain=False)
 
 

@@ -59,6 +59,12 @@ K_MSGQ_DEFINE(line_msgq, RX_BUF_SIZE, 8, 4);
 
 void init_node_identity()
 {
+	/* 固定 node_id = 1，禁用硬件 UID 生成逻辑 */
+	node_id = 1;
+	strcpy(node_uid_text, "NA");
+	return;
+
+	/*
 	uint8_t uid[16];
 	ssize_t uid_len = hwinfo_get_device_id(uid, sizeof(uid));
 	if (uid_len <= 0) {
@@ -82,6 +88,7 @@ void init_node_identity()
 		snprintk(&node_uid_text[i * 2U], 3, "%02X", uid[i]);
 	}
 	node_uid_text[bytes_to_print * 2U] = '\0';
+	*/
 }
 
 void uart_send_bytes(const char *data, size_t len)

@@ -1,0 +1,13 @@
+listeners:
+  default:
+    type: tcp
+    bind: 0.0.0.0:1883
+
+plugins:
+  amqtt.plugins.logging_amqtt.EventLoggerPlugin: {}
+  amqtt.plugins.authentication.AnonymousAuthPlugin:
+    allow_anonymous: false
+  amqtt.plugins.authentication.FileAuthPlugin:
+    password_file: tools/mqtt/passwords.txt
+  amqtt.plugins.sys.broker.BrokerSysPlugin:
+    sys_interval: 0

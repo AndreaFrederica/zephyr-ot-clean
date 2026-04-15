@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import socket
@@ -21,6 +22,25 @@ try:
     from amqtt.broker import Broker as AmqttBroker
 except Exception:
     AmqttBroker = None
+
+
+UVICORN_LOGGER_NAME = "uvicorn.error"
+app_logger = logging.getLogger(UVICORN_LOGGER_NAME).getChild("parking_lock_cloud")
+mqtt_logger = app_logger.getChild("mqtt")
+broker_logger = app_logger.getChild("broker")
+
+
+def mirror_logger_to_uvicorn(logger_name: str, level: int = logging.INFO) -> None:
+    source = logging.getLogger(logger_name)
+    target = logging.getLogger(UVICORN_LOGGER_NAME)
+
+    source.handlers = target.handlers
+    source.setLevel(level)
+    source.propagate = False
+
+
+mirror_logger_to_uvicorn("amqtt", logging.INFO)
+mirror_logger_to_uvicorn("amqtt.broker", logging.INFO)
 
 
 def utc_now() -> str:
@@ -109,6 +129,8 @@ COMMANDS: dict[str, CommandItem] = {}
 
 MQTT_BROKER = os.getenv("PARKING_LOCK_MQTT_BROKER", "127.0.0.1")
 MQTT_PORT = int(os.getenv("PARKING_LOCK_MQTT_PORT", "1883"))
+MQTT_USER = os.getenv("PARKING_LOCK_MQTT_USER", "")
+MQTT_PASSWORD = os.getenv("PARKING_LOCK_MQTT_PASSWORD", "")
 TOPIC_UP_RAW = os.getenv("PARKING_LOCK_TOPIC_UP_RAW", "parking_lock/gateway/up/raw")
 TOPIC_CMD = os.getenv("PARKING_LOCK_TOPIC_CMD", "parking_lock/cloud/command")
 TOPIC_CMD_ACK = os.getenv("PARKING_LOCK_TOPIC_CMD_ACK", "parking_lock/gateway/command_ack")
@@ -159,15 +181,27 @@ ws_manager = WsManager()
 
 
 def push_event(level: str, event: str, raw: str, extra: dict[str, Any] | None = None) -> None:
+    payload = extra or {}
     EVENTS.append(
         EventItem(
             ts=utc_now(),
             level=level,
             event=event,
             raw=raw,
-            extra=extra or {},
+            extra=payload,
         )
     )
+
+    message = f"{event}: {raw}" if raw else event
+    if payload:
+        message = f"{message} extra={payload}"
+
+    if level == "error":
+        mqtt_logger.error(message)
+    elif level == "warn":
+        mqtt_logger.warning(message)
+    else:
+        mqtt_logger.info(message)
 
 
 def on_mqtt_connect(client: mqtt.Client, userdata: Any, flags: Any, rc: int) -> None:
@@ -188,6 +222,36 @@ def on_mqtt_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -
         push_snapshot_from_thread()
         return
 
+    if msg.topic == TOPIC_CMD_ACK:
+        cmd_id = None
+        status = ""
+        if payload.startswith("ACK,"):
+            parts = payload.split(",", 3)
+            if len(parts) >= 4:
+                cmd_id = parts[1]
+                status = parts[2].lower()
+        else:
+            try:
+                data = json.loads(payload)
+            except Exception:
+                push_event("warn", "mqtt_ack_bad_payload", payload, {})
+                return
+            cmd_id = data.get("command_id")
+            status = str(data.get("status", "")).lower()
+
+        if not cmd_id or cmd_id not in COMMANDS:
+            push_event("warn", "mqtt_ack_unknown_cmd", payload, {})
+            return
+
+        item = COMMANDS[cmd_id]
+        if status in {"sent", "done", "failed"}:
+            item.status = status
+            if status in {"done", "failed"}:
+                item.ack_at = utc_now()
+            push_event("info", "mqtt_command_ack", payload, {"command_id": cmd_id})
+            # 不再因为 ACK 执行回执广播全局 snapshot，避免前端把 ACK 当成自然回包触发重试
+        return
+
 
 def can_connect_tcp(host: str, port: int, timeout_s: float = 0.6) -> bool:
     try:
@@ -195,27 +259,6 @@ def can_connect_tcp(host: str, port: int, timeout_s: float = 0.6) -> bool:
             return True
     except Exception:
         return False
-
-    if msg.topic == TOPIC_CMD_ACK:
-        try:
-            data = json.loads(payload)
-        except Exception:
-            push_event("warn", "mqtt_ack_bad_json", payload, {})
-            return
-        cmd_id = data.get("command_id")
-        status = str(data.get("status", "")).lower()
-        if not cmd_id or cmd_id not in COMMANDS:
-            push_event("warn", "mqtt_ack_unknown_cmd", payload, {})
-            return
-        item = COMMANDS[cmd_id]
-        if status in {"sent", "done", "failed"}:
-            item.status = status
-            if status in {"done", "failed"}:
-                item.ack_at = utc_now()
-            push_event("info", "mqtt_command_ack", payload, {"command_id": cmd_id})
-            push_snapshot_from_thread()
-        return
-
 
 def make_snapshot(limit_events: int = 80) -> dict[str, Any]:
     return {
@@ -291,9 +334,13 @@ def handle_ingest_line(raw_line: str) -> dict[str, Any]:
 def start_mqtt() -> None:
     global mqtt_client
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+    mqtt_client.enable_logger(mqtt_logger)
     mqtt_client.on_connect = on_mqtt_connect
     mqtt_client.on_message = on_mqtt_message
     mqtt_client.reconnect_delay_set(min_delay=1, max_delay=8)
+    if MQTT_USER:
+        mqtt_client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
+    mqtt_logger.info("mqtt_connect_async target=%s:%s", MQTT_BROKER, MQTT_PORT)
     mqtt_client.connect_async(MQTT_BROKER, MQTT_PORT, keepalive=60)
     mqtt_client.loop_start()
 
@@ -302,6 +349,7 @@ def stop_mqtt() -> None:
     global mqtt_client, mqtt_connected
     mqtt_connected = False
     if mqtt_client is not None:
+        mqtt_logger.info("mqtt_stop target=%s:%s", MQTT_BROKER, MQTT_PORT)
         mqtt_client.loop_stop()
         mqtt_client.disconnect()
         mqtt_client = None
@@ -331,6 +379,7 @@ async def start_embedded_broker_if_needed() -> None:
         "sys_interval": 0,
         "topic-check": {"enabled": False},
     }
+    broker_logger.info("embedded_broker_start bind=%s:%s", EMBED_BROKER_HOST, EMBED_BROKER_PORT)
     embedded_broker = AmqttBroker(broker_config)
     await embedded_broker.start()
     embedded_broker_started = True
@@ -341,6 +390,7 @@ async def stop_embedded_broker() -> None:
     global embedded_broker, embedded_broker_started
     if embedded_broker is not None:
         try:
+            broker_logger.info("embedded_broker_stop bind=%s:%s", EMBED_BROKER_HOST, EMBED_BROKER_PORT)
             await embedded_broker.shutdown()
         finally:
             embedded_broker = None
@@ -350,16 +400,13 @@ async def stop_embedded_broker() -> None:
 def publish_command(command: CommandItem) -> bool:
     if mqtt_client is None or not mqtt_connected:
         return False
-    payload = json.dumps(
-        {
-            "command_id": command.id,
-            "node_id": command.node_id,
-            "action": command.action,
-            "value": command.value,
-            "created_at": command.created_at,
-        },
-        ensure_ascii=False,
-    )
+    action = command.action.upper()
+    if action == "LOCK" and command.value in {0, 1}:
+        payload = f"CMD,{command.id},LOCK,{command.node_id},{command.value}"
+    elif action == "GET":
+        payload = f"CMD,{command.id},GET,{command.node_id}"
+    else:
+        return False
     info = mqtt_client.publish(TOPIC_CMD, payload=payload, qos=1, retain=False)
     return info.rc == mqtt.MQTT_ERR_SUCCESS
 

@@ -17,6 +17,10 @@ fan_controller_deploy = { depends-on = ["fan_controller_build", "fan_controller_
 fan_controller_deploy_clean = { depends-on = ["fan_controller_config", "fan_controller_flash"] }
 fan_controller_c = { depends-on = ["fan_controller_config"] }
 fan_controller = { depends-on = ["fan_controller_build"] }
+parking_lock_cloud = "python app/parking_lock_cloud/run_embedded_server.py --host 0.0.0.0 --port 8880 --mqtt-host 127.0.0.1 --mqtt-port 1883 --embed-host 0.0.0.0 --mqtt-user user --mqtt-password user --reload"
+parking_lock_cloud_prod = "python app/parking_lock_cloud/run_embedded_server.py --host 0.0.0.0 --port 8881 --mqtt-host 127.0.0.1 --mqtt-port 1883 --embed-host 0.0.0.0 --mqtt-user user --mqtt-password user"
+mqtt_local_setup = "python tools/mqtt/setup_local_broker.py"
+mqtt_local = { depends-on = ["mqtt_local_setup"], cmd = "python tools/mqtt/run_local_broker.py" }
 
 [dependencies]
 python = "==3.12"

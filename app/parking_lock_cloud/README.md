@@ -43,6 +43,26 @@ Then open:
 
 - http://127.0.0.1:8000/
 
+3b) Run cloud server with embedded MQTT broker via one startup script:
+
+```bash
+pixi run python app/parking_lock_cloud/run_embedded_server.py --host 0.0.0.0 --port 8000 --mqtt-host 127.0.0.1 --mqtt-port 1883 --embed-host 0.0.0.0 --reload
+```
+
+This script forces `PARKING_LOCK_EMBED_BROKER=1` and starts the backend plus the embedded `amqtt` broker together.
+
+Or use the pixi task:
+
+```bash
+pixi run parking_lock_cloud
+```
+
+For device integration and longer-running tests, prefer the non-reload task:
+
+```bash
+pixi run parking_lock_cloud_prod
+```
+
 4) Run serial->MQTT bridge:
 
 ```bash
