@@ -14,14 +14,17 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 
 namespace {
 
 #define RS485_NODE DT_ALIAS(rs485_uart)
 
 constexpr size_t RX_BUF_SIZE = 128;
-constexpr int NODE_ADDR_SPACE = 4;
+constexpr int NODE_ADDR_SPACE = 64;
 constexpr int PING_SLOT_MS = 8;
+constexpr uint32_t RS485_IDLE_GUARD_MS = 4;
+constexpr int RS485_TX_RETRY_MAX = 5;
 constexpr int PARTS_MAX = 8;
 constexpr size_t UID_TEXT_MAX = 2 * 8 + 1;
 
@@ -46,7 +49,8 @@ uint32_t rx_bytes = 0;
 uint32_t rx_lines = 0;
 uint32_t rx_cmds = 0;
 uint32_t rx_overflows = 0;
-int node_id = 1;
+int node_id = 0;
+bool node_uid_ready = false;
 char node_uid_text[UID_TEXT_MAX] = "NA";
 bool has_dht_cache = false;
 int32_t dht_temp_cache_centi = 0;
@@ -56,28 +60,19 @@ char rx_line[RX_BUF_SIZE];
 size_t rx_line_pos = 0;
 
 K_MSGQ_DEFINE(line_msgq, RX_BUF_SIZE, 8, 4);
+atomic_t rs485_last_activity_ms;
 
 void init_node_identity()
 {
-	/* 固定 node_id = 1，禁用硬件 UID 生成逻辑 */
-	node_id = 1;
-	strcpy(node_uid_text, "NA");
-	return;
-
-	/*
 	uint8_t uid[16];
+	node_id = 0;
+	node_uid_ready = false;
+
 	ssize_t uid_len = hwinfo_get_device_id(uid, sizeof(uid));
 	if (uid_len <= 0) {
-		node_id = 1;
 		strcpy(node_uid_text, "NA");
 		return;
 	}
-
-	uint8_t hash = 0;
-	for (ssize_t i = 0; i < uid_len; ++i) {
-		hash = (uint8_t)((hash * 33U) ^ uid[i]);
-	}
-	node_id = (hash % NODE_ADDR_SPACE) + 1;
 
 	size_t bytes_to_print = (size_t)uid_len;
 	if (bytes_to_print > 8U) {
@@ -88,7 +83,7 @@ void init_node_identity()
 		snprintk(&node_uid_text[i * 2U], 3, "%02X", uid[i]);
 	}
 	node_uid_text[bytes_to_print * 2U] = '\0';
-	*/
+	node_uid_ready = true;
 }
 
 void uart_send_bytes(const char *data, size_t len)
@@ -98,9 +93,34 @@ void uart_send_bytes(const char *data, size_t len)
 	}
 }
 
+bool wait_bus_idle_and_send(const char *text)
+{
+	if (text == nullptr || text[0] == '\0') {
+		return false;
+	}
+
+	for (int attempt = 0; attempt < RS485_TX_RETRY_MAX; ++attempt) {
+		uint32_t now = k_uptime_get_32();
+		uint32_t last = (uint32_t)atomic_get(&rs485_last_activity_ms);
+		uint32_t idle_for = now - last;
+
+		if (idle_for >= RS485_IDLE_GUARD_MS) {
+			uart_send_bytes(text, strlen(text));
+			atomic_set(&rs485_last_activity_ms, (atomic_val_t)k_uptime_get_32());
+			return true;
+		}
+
+		/* 简单退避，避免多个从机同一时刻重发造成再次碰撞。 */
+		int backoff_ms = 1 + ((node_id + attempt * 3 + (int)(now & 0x03U)) % 7);
+		k_msleep(backoff_ms);
+	}
+
+	return false;
+}
+
 void uart_send_text(const char *text)
 {
-	uart_send_bytes(text, strlen(text));
+	(void)wait_bus_idle_and_send(text);
 }
 
 void uart_send_line(const char *text)
@@ -228,6 +248,17 @@ void send_text_with_node(const char *head, const char *tail)
 	uart_send_text(out);
 }
 
+void send_registration_request()
+{
+	if (node_id != 0 || !node_uid_ready) {
+		return;
+	}
+
+	char out[64];
+	snprintk(out, sizeof(out), "REG,REQ,UID=%s\r\n", node_uid_text);
+	uart_send_text(out);
+}
+
 void send_sensor_report(const char *reason)
 {
 	char out[320];
@@ -297,7 +328,19 @@ void process_req(char *parts[PARTS_MAX], int count)
 		return;
 	}
 
+	if (strcmp(parts[2], "DISCOVER") == 0 && req_node == 0 && node_id == 0) {
+		uint32_t now = k_uptime_get_32();
+		int backoff_ms = 2 + ((int)((now & 0x07U) + (uint32_t)(node_uid_text[0] & 0x07)) % 12);
+		k_msleep(backoff_ms);
+		send_registration_request();
+		return;
+	}
+
 	if (req_node != node_id && req_node != 0) {
+		return;
+	}
+
+	if (node_id == 0) {
 		return;
 	}
 
@@ -329,7 +372,28 @@ void process_set(char *parts[PARTS_MAX], int count)
 		return;
 	}
 
+	if (count >= 5 && req_node == 0 && strcmp(parts[2], "ADDR") == 0 && node_id == 0 && node_uid_ready) {
+		int assigned = 0;
+		if (!parse_int(parts[4], &assigned) || assigned < 1 || assigned > NODE_ADDR_SPACE) {
+			return;
+		}
+
+		if (strcmp(parts[3], node_uid_text) != 0) {
+			return;
+		}
+
+		node_id = assigned;
+		char out[64];
+		snprintk(out, sizeof(out), "REG,ACK,%d,UID=%s\r\n", node_id, node_uid_text);
+		uart_send_text(out);
+		return;
+	}
+
 	if (req_node != node_id) {
+		return;
+	}
+
+	if (node_id == 0) {
 		return;
 	}
 
@@ -406,6 +470,8 @@ void uart_isr(const device *dev, void *user_data)
 			break;
 		}
 
+		atomic_set(&rs485_last_activity_ms, (atomic_val_t)k_uptime_get_32());
+
 		for (int i = 0; i < rd; ++i) {
 			const uint8_t c = buf[i];
 			rx_bytes++;
@@ -470,7 +536,10 @@ int main()
 	}
 
 	init_node_identity();
-	uart_send_line("BOOT,1,START");
+	atomic_set(&rs485_last_activity_ms, (atomic_val_t)k_uptime_get_32());
+	char boot_start[32];
+	snprintk(boot_start, sizeof(boot_start), "BOOT,%d,START", node_id);
+	uart_send_line(boot_start);
 
 	const int boot_flags = init_devices();
 

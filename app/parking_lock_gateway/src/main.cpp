@@ -8,6 +8,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 
 namespace {
 #define RS485_NODE DT_ALIAS(rs485_uart)
@@ -17,8 +18,12 @@ namespace {
 constexpr size_t RX_BUF_SIZE = 192;
 constexpr int POLL_DELAY_MS = 10;
 constexpr int POLL_INTERVAL_MS = 200;
+constexpr int DISCOVERY_INTERVAL_MS = 1000;
 constexpr int RS485_TX_INTERVAL_MS = 50;
-constexpr int NODE_ADDR_MAX = 4;
+constexpr uint32_t RS485_IDLE_GUARD_MS = 4;
+constexpr uint32_t RS485_IDLE_WAIT_TIMEOUT_MS = 40;
+constexpr int NODE_ADDR_MAX = 64;
+constexpr size_t NODE_UID_MAX = 2 * 8 + 1;
 constexpr int PARTS_MAX = 24;
 constexpr int RX_MSGQ_DEPTH = 8;
 constexpr int RS485_CMD_MSGQ_DEPTH = 8;
@@ -59,6 +64,7 @@ struct Rs485Cmd {
 };
 
 NodeState states[NODE_ADDR_MAX];
+char registered_uid[NODE_ADDR_MAX][NODE_UID_MAX];
 
 K_MSGQ_DEFINE(rs485_msgq, RX_BUF_SIZE, RX_MSGQ_DEPTH, 4);
 K_MSGQ_DEFINE(screen_msgq, RX_BUF_SIZE, RX_MSGQ_DEPTH, 4);
@@ -68,6 +74,7 @@ K_MSGQ_DEFINE(rs485_cmd_msgq, sizeof(Rs485Cmd), RS485_CMD_MSGQ_DEPTH, 4);
 UartRxContext rs485Rx = {{0}, 0, &rs485_msgq};
 UartRxContext screenRx = {{0}, 0, &screen_msgq};
 UartRxContext wifiRx = {{0}, 0, &wifi_msgq};
+atomic_t rs485_last_activity_ms;
 
 void uart_send(const device *dev, const char *text)
 {
@@ -75,6 +82,32 @@ void uart_send(const device *dev, const char *text)
 
 	for (size_t i = 0; i < length; ++i) {
 		uart_poll_out(dev, (uint8_t)text[i]);
+	}
+}
+
+bool rs485_send_when_idle(const char *text)
+{
+	if (text == nullptr || text[0] == '\0') {
+		return false;
+	}
+
+	uint32_t deadline = k_uptime_get_32() + RS485_IDLE_WAIT_TIMEOUT_MS;
+	while (true) {
+		uint32_t now = k_uptime_get_32();
+		uint32_t last = (uint32_t)atomic_get(&rs485_last_activity_ms);
+		uint32_t idleFor = now - last;
+
+		if (idleFor >= RS485_IDLE_GUARD_MS) {
+			uart_send(rs485, text);
+			atomic_set(&rs485_last_activity_ms, (atomic_val_t)k_uptime_get_32());
+			return true;
+		}
+
+		if ((int32_t)(deadline - now) <= 0) {
+			return false;
+		}
+
+		k_msleep(1);
 	}
 }
 
@@ -160,7 +193,91 @@ void init_states()
 		states[i].flameDigital = 0;
 		states[i].flameMv = 0;
 		states[i].lockState = 0;
+		registered_uid[i][0] = '\0';
 	}
+}
+
+bool is_addr_registered(int addr)
+{
+	if (!is_valid_node_id(addr)) {
+		return false;
+	}
+
+	return registered_uid[addr - 1][0] != '\0';
+}
+
+int find_addr_by_uid(const char *uid)
+{
+	if (uid == nullptr || uid[0] == '\0') {
+		return -1;
+	}
+
+	for (int i = 0; i < NODE_ADDR_MAX; ++i) {
+		if (registered_uid[i][0] != '\0' && strcmp(registered_uid[i], uid) == 0) {
+			return i + 1;
+		}
+	}
+
+	return -1;
+}
+
+int allocate_first_free_addr()
+{
+	for (int i = 0; i < NODE_ADDR_MAX; ++i) {
+		if (registered_uid[i][0] == '\0') {
+			return i + 1;
+		}
+	}
+
+	return -1;
+}
+
+bool register_uid_addr(const char *uid, int addr)
+{
+	if (!is_valid_node_id(addr) || uid == nullptr || uid[0] == '\0') {
+		return false;
+	}
+
+	if (registered_uid[addr - 1][0] != '\0' && strcmp(registered_uid[addr - 1], uid) != 0) {
+		return false;
+	}
+
+	return copy_string(registered_uid[addr - 1], sizeof(registered_uid[addr - 1]), uid);
+}
+
+int ensure_addr_for_uid(const char *uid)
+{
+	int existing = find_addr_by_uid(uid);
+	if (existing > 0) {
+		return existing;
+	}
+
+	int addr = allocate_first_free_addr();
+	if (addr <= 0) {
+		return -1;
+	}
+
+	if (!register_uid_addr(uid, addr)) {
+		return -1;
+	}
+
+	return addr;
+}
+
+int find_next_registered_addr(int cursor)
+{
+	if (cursor < 1 || cursor > NODE_ADDR_MAX) {
+		cursor = 1;
+	}
+
+	for (int i = 0; i < NODE_ADDR_MAX; ++i) {
+		int addr = ((cursor - 1 + i) % NODE_ADDR_MAX) + 1;
+		if (is_addr_registered(addr)) {
+			return addr;
+		}
+	}
+
+	return -1;
 }
 
 void forward_to_screen(const char *payload)
@@ -339,6 +456,8 @@ void parse_telemetry(NodeState *state, char *parts[PARTS_MAX], int count)
 	}
 }
 
+void process_reg_frame(char *parts[PARTS_MAX], int count, const char *rawLine);
+
 void process_rs485_line(char *line)
 {
 	char rawLine[RX_BUF_SIZE];
@@ -348,7 +467,16 @@ void process_rs485_line(char *line)
 
 	char *parts[PARTS_MAX];
 	int count = split_csv(line, parts);
-	if (count < 3 || parts[0] == nullptr) {
+	if (count < 2 || parts[0] == nullptr) {
+		return;
+	}
+
+	if (strcmp(parts[0], "REG") == 0) {
+		process_reg_frame(parts, count, rawLine);
+		return;
+	}
+
+	if (count < 3) {
 		return;
 	}
 
@@ -372,20 +500,75 @@ void process_rs485_line(char *line)
 	screen_publish_latest_snapshot(state);
 }
 
-void send_poll(int nodeId)
+bool send_poll(int nodeId)
 {
 	char out[32];
 
 	snprintk(out, sizeof(out), "REQ,%d,GET\r\n", nodeId);
-	uart_send(rs485, out);
+	return rs485_send_when_idle(out);
 }
 
-void send_set_lock(int nodeId, int value)
+bool send_discovery_probe()
+{
+	return rs485_send_when_idle("REQ,0,DISCOVER\r\n");
+}
+
+bool send_set_lock(int nodeId, int value)
 {
 	char out[32];
 
 	snprintk(out, sizeof(out), "SET,%d,LOCK,%d\r\n", nodeId, value);
-	uart_send(rs485, out);
+	return rs485_send_when_idle(out);
+}
+
+bool send_assign_addr(const char *uid, int addr)
+{
+	if (uid == nullptr || uid[0] == '\0' || !is_valid_node_id(addr)) {
+		return false;
+	}
+
+	char out[64];
+	snprintk(out, sizeof(out), "SET,0,ADDR,%s,%d\r\n", uid, addr);
+	return rs485_send_when_idle(out);
+}
+
+void process_reg_frame(char *parts[PARTS_MAX], int count, const char *rawLine)
+{
+	forward_upstream(rawLine);
+
+	if (count >= 3 && strcmp(parts[1], "REQ") == 0 && starts_with(parts[2], "UID=")) {
+		const char *uid = parts[2] + 4;
+		int addr = ensure_addr_for_uid(uid);
+		if (addr <= 0) {
+			forward_upstream("REG,NACK,NOADDR");
+			return;
+		}
+
+		if (send_assign_addr(uid, addr)) {
+			char out[64];
+			snprintk(out, sizeof(out), "REG,ASSIGN,%d,UID=%s", addr, uid);
+			forward_upstream(out);
+		}
+		return;
+	}
+
+	if (count >= 4 && strcmp(parts[1], "ACK") == 0 && starts_with(parts[3], "UID=")) {
+		int addr = 0;
+		if (!parse_int(parts[2], &addr) || !is_valid_node_id(addr)) {
+			return;
+		}
+
+		const char *uid = parts[3] + 4;
+		if (!register_uid_addr(uid, addr)) {
+			return;
+		}
+
+		auto *state = findNode(addr);
+		if (state != nullptr) {
+			state->online = true;
+			state->lastSeen = k_uptime_get();
+		}
+	}
 }
 
 bool execute_gateway_command(const char *action, const char *nodeText, const char *valueText, const char *commandId)
@@ -395,6 +578,11 @@ bool execute_gateway_command(const char *action, const char *nodeText, const cha
 	Rs485Cmd cmd = {};
 
 	if (!parse_int(nodeText, &nodeId) || !is_valid_node_id(nodeId)) {
+		send_wifi_ack(commandId, "failed", "bad_node");
+		return true;
+	}
+
+	if (!is_addr_registered(nodeId)) {
 		send_wifi_ack(commandId, "failed", "bad_node");
 		return true;
 	}
@@ -531,6 +719,10 @@ void uart_rx_isr(const device *dev, void *user_data)
 			break;
 		}
 
+		if (dev == rs485) {
+			atomic_set(&rs485_last_activity_ms, (atomic_val_t)k_uptime_get_32());
+		}
+
 		for (int i = 0; i < rd; ++i) {
 			uint8_t c = fifo[i];
 
@@ -555,8 +747,10 @@ int main()
 	char screenLine[RX_BUF_SIZE] = {0};
 	char wifiLine[RX_BUF_SIZE] = {0};
 	init_states();
+	atomic_set(&rs485_last_activity_ms, (atomic_val_t)k_uptime_get_32());
 
 	int64_t nextPollAt = k_uptime_get() + POLL_INTERVAL_MS;
+	int64_t nextDiscoveryAt = k_uptime_get() + DISCOVERY_INTERVAL_MS;
 	int64_t nextRs485TxAt = k_uptime_get();
 	int pollCursor = 1;
 
@@ -594,21 +788,32 @@ int main()
 		if (now >= nextRs485TxAt) {
 			Rs485Cmd cmd = {};
 			if (k_msgq_get(&rs485_cmd_msgq, &cmd, K_NO_WAIT) == 0) {
+				bool sent = false;
 				if (cmd.action == Rs485Action::Lock) {
-					send_set_lock(cmd.nodeId, cmd.value);
+					sent = send_set_lock(cmd.nodeId, cmd.value);
 				} else {
-					send_poll(cmd.nodeId);
+					sent = send_poll(cmd.nodeId);
 				}
 
-				if (cmd.needAck && cmd.commandId[0] != '\0') {
+				if (cmd.needAck && cmd.commandId[0] != '\0' && sent) {
 					send_wifi_ack(cmd.commandId, "sent", "rs485_written");
+				} else if (cmd.needAck && cmd.commandId[0] != '\0') {
+					send_wifi_ack(cmd.commandId, "failed", "bus_busy");
 				}
 
 				nextRs485TxAt = now + RS485_TX_INTERVAL_MS;
 				nextPollAt = now + POLL_INTERVAL_MS;
+				nextDiscoveryAt = now + DISCOVERY_INTERVAL_MS;
+			} else if (now >= nextDiscoveryAt) {
+				if (send_discovery_probe()) {
+					nextDiscoveryAt = now + DISCOVERY_INTERVAL_MS;
+				}
+				nextRs485TxAt = now + RS485_TX_INTERVAL_MS;
 			} else if (now >= nextPollAt) {
-				send_poll(pollCursor);
-				pollCursor = (pollCursor % NODE_ADDR_MAX) + 1;
+				int addr = find_next_registered_addr(pollCursor);
+				if (addr > 0 && send_poll(addr)) {
+					pollCursor = (addr % NODE_ADDR_MAX) + 1;
+				}
 				nextPollAt = now + POLL_INTERVAL_MS;
 				nextRs485TxAt = now + RS485_TX_INTERVAL_MS;
 			}

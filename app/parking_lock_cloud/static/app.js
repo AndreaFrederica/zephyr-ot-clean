@@ -12,13 +12,21 @@ const TEMP_MAX_C = 60;
 const HUMI_MAX = 100;
 let ws = null;
 let alarmEnabled = false;
+
+// 事件委托：监听器绑在不会被销毁的父容器上，避免高频重渲染时按钮失效
+cardsEl.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-cmd]");
+  if (!btn) return;
+  const card = btn.closest(".card");
+  if (!card) return;
+  const nodeId = Number(card.dataset.nodeId);
+  const cmd = btn.dataset.cmd;
+  const val = btn.dataset.val !== undefined ? Number(btn.dataset.val) : null;
+  await sendCommand(nodeId, cmd, val);
+});
 let audioCtx = null;
 let lastAlarmAt = 0;
 
-// 自动重试状态
-const pendingLocks = new Map();
-const lastUpdatedAt = new Map();
-const LOCK_MAX_RETRIES = 20;
 
 // 主题
 function applyTheme(theme) {
@@ -121,67 +129,94 @@ function lockClass(lockState) {
   return "chip-unknown";
 }
 
+// 卡片缓存：key=node_id，value={ el: .card DOM, sig: 上次渲染的数据签名 }
+// 保持卡片 DOM 稳定，避免 mousedown→mouseup 之间 innerHTML="" 导致 click 不触发
+const _cardCache = new Map();
+
+function nodeSignature(node) {
+  return `${node.temp}|${node.humi}|${node.lock_state}|${node.flame_digital}|${node.flame_analog}|${node.reason}|${node.uid}|${node.updated_at}`;
+}
+
+function updateCardMetrics(root, node) {
+  const flameRiskPct = flameRiskPercent(node.flame_analog);
+  const tempPct = tempPercent(node.temp);
+  const humiPct = humiPercent(node.humi);
+  const fireState = fireText(node.flame_digital);
+  const riskCls = flameLevelClass(node.flame_digital, flameRiskPct);
+  const lockStateText = lockText(node.lock_state);
+  root.querySelector(".metrics").innerHTML = [
+    `<div class="metric-grid">`,
+    `  <div class="metric-item"><span>温度</span><strong>${node.temp} C</strong></div>`,
+    `  <div class="metric-item"><span>湿度</span><strong>${node.humi} %</strong></div>`,
+    `  <div class="metric-item"><span>锁状态</span><strong class="${lockClass(node.lock_state)}">${lockStateText}</strong></div>`,
+    `  <div class="metric-item"><span>火焰数字</span><strong class="${riskCls}">${node.flame_digital} (${fireState})</strong></div>`,
+    `</div>`,
+    `<div class="gauge-grid">`,
+    `  <div class="gauge-item">`,
+    `    <div class="gauge-head"><span>温度仪表</span><span>${node.temp} C</span></div>`,
+    `    <div class="gauge-track"><div class="gauge-fill gauge-temp" style="width:${tempPct}%"></div></div>`,
+    `  </div>`,
+    `  <div class="gauge-item">`,
+    `    <div class="gauge-head"><span>湿度仪表</span><span>${node.humi} %</span></div>`,
+    `    <div class="gauge-track"><div class="gauge-fill gauge-humi" style="width:${humiPct}%"></div></div>`,
+    `  </div>`,
+    `</div>`,
+    `<div class="flame-wrap">`,
+    `  <div class="flame-head"><span>火焰风险（3300=无火）</span><span>${node.flame_analog} mV | 风险 ${flameRiskPct}%</span></div>`,
+    `  <div class="flame-track"><div class="flame-fill ${riskCls}-bg" style="width:${flameRiskPct}%"></div></div>`,
+    `</div>`,
+    `<div class="extra">原因: ${node.reason} | UID: ${node.uid}</div>`,
+    `<div class="extra subtle">更新时间: ${node.updated_at}</div>`,
+  ].join("");
+}
+
 function renderNodes(nodes) {
-  cardsEl.innerHTML = "";
   const online = nodes.filter((n) => n.online);
   onlineCountEl.textContent = `${online.length} 个在线节点`;
 
+  // 移除已下线节点的卡片
+  const onlineIds = new Set(online.map((n) => n.node_id));
+  for (const [id, el] of _cardCache) {
+    if (!onlineIds.has(id)) {
+      el.remove();
+      _cardCache.delete(id);
+    }
+  }
+
   if (online.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "subtle";
-    empty.textContent = "暂无在线节点";
-    cardsEl.appendChild(empty);
+    // 无在线节点时显示占位文字（仅在没有卡片时插入）
+    if (!cardsEl.querySelector(".no-nodes-hint")) {
+      cardsEl.innerHTML = "";
+      const empty = document.createElement("div");
+      empty.className = "subtle no-nodes-hint";
+      empty.textContent = "暂无在线节点";
+      cardsEl.appendChild(empty);
+    }
     return;
   }
 
-  for (const node of online) {
-    const fragment = cardTpl.content.cloneNode(true);
-    const root = fragment.querySelector(".card");
-    const flameRiskPct = flameRiskPercent(node.flame_analog);
-    const tempPct = tempPercent(node.temp);
-    const humiPct = humiPercent(node.humi);
-    const fireState = fireText(node.flame_digital);
-    const riskCls = flameLevelClass(node.flame_digital, flameRiskPct);
-    const lockStateText = lockText(node.lock_state);
-    fragment.querySelector(".node-title").textContent = `节点 ${node.node_id}`;
-    fragment.querySelector(".metrics").innerHTML = [
-      `<div class="metric-grid">`,
-      `  <div class="metric-item"><span>温度</span><strong>${node.temp} C</strong></div>`,
-      `  <div class="metric-item"><span>湿度</span><strong>${node.humi} %</strong></div>`,
-      `  <div class="metric-item"><span>锁状态</span><strong class="${lockClass(node.lock_state)}">${lockStateText}</strong></div>`,
-      `  <div class="metric-item"><span>火焰数字</span><strong class="${riskCls}">${node.flame_digital} (${fireState})</strong></div>`,
-      `</div>`,
-      `<div class="gauge-grid">`,
-      `  <div class="gauge-item">`,
-      `    <div class="gauge-head"><span>温度仪表</span><span>${node.temp} C</span></div>`,
-      `    <div class="gauge-track"><div class="gauge-fill gauge-temp" style="width:${tempPct}%"></div></div>`,
-      `  </div>`,
-      `  <div class="gauge-item">`,
-      `    <div class="gauge-head"><span>湿度仪表</span><span>${node.humi} %</span></div>`,
-      `    <div class="gauge-track"><div class="gauge-fill gauge-humi" style="width:${humiPct}%"></div></div>`,
-      `  </div>`,
-      `</div>`,
-      `<div class="flame-wrap">`,
-      `  <div class="flame-head"><span>火焰风险（3300=无火）</span><span>${node.flame_analog} mV | 风险 ${flameRiskPct}%</span></div>`,
-      `  <div class="flame-track"><div class="flame-fill ${riskCls}-bg" style="width:${flameRiskPct}%"></div></div>`,
-      `</div>`,
-      `<div class="extra">原因: ${node.reason} | UID: ${node.uid}</div>`,
-      `<div class="extra subtle">更新时间: ${node.updated_at}</div>`,
-    ].join("");
+  // 移除占位文字
+  const hint = cardsEl.querySelector(".no-nodes-hint");
+  if (hint) hint.remove();
 
-    root.querySelector(".btn-get").addEventListener("click", async () => {
-      pendingLocks.delete(node.node_id);
-      await sendCommand(node.node_id, "GET", null);
-    });
-    root.querySelector(".btn-lock").addEventListener("click", async () => {
-      pendingLocks.set(node.node_id, { expectedValue: "1", retriesLeft: LOCK_MAX_RETRIES });
-      await sendCommand(node.node_id, "LOCK", 1);
-    });
-    root.querySelector(".btn-unlock").addEventListener("click", async () => {
-      pendingLocks.set(node.node_id, { expectedValue: "0", retriesLeft: LOCK_MAX_RETRIES });
-      await sendCommand(node.node_id, "LOCK", 0);
-    });
-    cardsEl.appendChild(fragment);
+  for (const node of online) {
+    const sig = nodeSignature(node);
+    const cached = _cardCache.get(node.node_id);
+    if (!cached) {
+      // 首次出现：从模板克隆，加入 DOM 和缓存
+      const fragment = cardTpl.content.cloneNode(true);
+      const root = fragment.querySelector(".card");
+      root.dataset.nodeId = node.node_id;
+      root.querySelector(".node-title").textContent = `节点 ${node.node_id}`;
+      updateCardMetrics(root, node);
+      _cardCache.set(node.node_id, { el: root, sig });
+      cardsEl.appendChild(fragment);
+    } else if (cached.sig !== sig) {
+      // 数据有变化才更新，避免无意义的 DOM 写入
+      updateCardMetrics(cached.el, node);
+      cached.sig = sig;
+    }
+    // sig 相同 → 跳过，完全不触碰 DOM
   }
 }
 
@@ -204,53 +239,13 @@ async function sendCommand(nodeId, action, value) {
   }
 }
 
-function checkPendingLocks(nodes, changedNodeIds) {
-  for (const node of nodes) {
-    const pending = pendingLocks.get(node.node_id);
-    if (!pending) continue;
-
-    if (String(node.lock_state) === pending.expectedValue) {
-      pendingLocks.delete(node.node_id);
-      statusTextEl.textContent = `节点${node.node_id} 锁状态已达成 ${lockText(pending.expectedValue)}`;
-      continue;
-    }
-
-    // 只有该节点收到了自然回包（updated_at 有更新）时才消耗重试次数；
-    // ACK 执行回执不会更新 updated_at，因此不会误触发重试。
-    if (!changedNodeIds.has(node.node_id)) {
-      continue;
-    }
-
-    if (pending.retriesLeft > 0) {
-      pending.retriesLeft -= 1;
-      const value = Number(pending.expectedValue);
-      statusTextEl.textContent = `重试 LOCK -> 节点${node.node_id} (剩余${pending.retriesLeft}次)`;
-      sendCommand(node.node_id, "LOCK", value);
-    } else {
-      pendingLocks.delete(node.node_id);
-      statusTextEl.textContent = `节点${node.node_id} 自动重试结束，未达成目标状态`;
-    }
-  }
-}
-
 function applySnapshot(snapshot) {
   if (!snapshot) return;
   const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
   const events = Array.isArray(snapshot.events) ? snapshot.events : [];
 
-  // 过滤：只有自然回包（REPORT/OFFLINE）会更新节点的 updated_at；
-  // ACK 等执行回执不会更新。用 updated_at 变化来判断是否收到了新的自然回包。
-  const changedNodeIds = new Set();
-  for (const node of nodes) {
-    if (lastUpdatedAt.has(node.node_id) && lastUpdatedAt.get(node.node_id) !== node.updated_at) {
-      changedNodeIds.add(node.node_id);
-    }
-    lastUpdatedAt.set(node.node_id, node.updated_at);
-  }
-
   renderNodes(nodes);
   renderEvents(events);
-  checkPendingLocks(nodes, changedNodeIds);
 
   const mqttMark = snapshot.mqtt_connected ? "MQTT OK" : "MQTT OFF";
   statusTextEl.textContent = `实时更新 ${new Date().toLocaleTimeString()} | ${mqttMark}`;

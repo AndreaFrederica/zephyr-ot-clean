@@ -47,7 +47,18 @@ Example:
 REPORT,1,PERIODIC,T=26.00,H=55.00,FD=0,FA=1234,L=1,DE=0,AE=0,SE=0,RB=100,RL=5,RC=2,RO=0\r\n
 ```
 
-### 3) Offline Event
+### 3) RS485 Registration Events
+
+Gateway forwards registration-related lines for diagnostics:
+
+```text
+REG,REQ,UID=<uid_hex>\r\n
+REG,ASSIGN,<node_id>,UID=<uid_hex>\r\n
+REG,ACK,<node_id>,UID=<uid_hex>\r\n
+REG,NACK,NOADDR\r\n
+```
+
+### 4) Offline Event
 
 ```text
 OFFLINE,<node_id>\r\n
@@ -59,7 +70,7 @@ Example:
 OFFLINE,2\r\n
 ```
 
-### 4) ESP Status Forwarding
+### 5) ESP Status Forwarding
 
 The gateway forwards ESP8266 status lines unchanged:
 
@@ -137,5 +148,7 @@ NETSTAT\r\n
 ## Notes
 
 - The gateway does not parse or store `NETCFG`; it forwards it to ESP8266 unchanged.
-- The screen should render `READY`, `NETCFG`, `WIFI`, `MQTT`, `INFO`, and `ERR` as network/module status lines.
+- The gateway periodically sends `REQ,0,DISCOVER` on RS485 and assigns addresses from `1` upward.
+- Only registered node addresses are polled and accepted for `LOCK`/`GET` operations.
+- The screen should render `READY`, `NETCFG`, `WIFI`, `MQTT`, `INFO`, `ERR`, and `REG` lines as status/diagnostic lines.
 - For the full gateway <-> ESP protocol, see [ESP_UART_PROTOCOL.md](/D:/Projects/zephyr-ot-clean/app/parking_lock_gateway/ESP_UART_PROTOCOL.md:1).

@@ -45,6 +45,9 @@ Examples:
 ```text
 REPORT,1,POLL,T=26.00,H=55.00,FD=1,FA=3289,L=0,UID=6714285050678849\r\n
 OFFLINE,2\r\n
+REG,REQ,UID=12AB34CD56EF7788\r\n
+REG,ASSIGN,1,UID=12AB34CD56EF7788\r\n
+REG,ACK,1,UID=12AB34CD56EF7788\r\n
 ```
 
 The ESP8266 firmware should publish or store these lines as needed.
@@ -99,11 +102,14 @@ Examples:
 ACK,7f3c8f2a,sent,rs485_written\r\n
 ACK,7f3c8f2a,failed,bad_node\r\n
 ACK,7f3c8f2a,failed,bad_value\r\n
+ACK,7f3c8f2a,failed,bus_busy\r\n
 ```
 
 `code` must be a simple token without commas.
 
 `sent` means the gateway has accepted the command and written it to the RS485 bus. It does not mean a slave node has finished the action.
+
+`bad_node` also covers unregistered node addresses.
 
 ## ESP8266 -> Gateway
 
@@ -181,6 +187,7 @@ Recommended values:
 - `bad_node`
 - `bad_value`
 - `bad_action`
+- `bus_busy`
 
 ### NETCFG status
 
@@ -201,6 +208,14 @@ Recommended values:
 - `CONNECTING`
 - `CONNECTED`
 - `DISCONNECTED,<reason>`
+
+## Registration/Discovery Notes
+
+- Gateway periodically sends `REQ,0,DISCOVER` on RS485.
+- Unassigned slave nodes respond with `REG,REQ,UID=<uid_hex>`.
+- Gateway assigns addresses from `1` upward using `SET,0,ADDR,<uid_hex>,<node_id>`.
+- Slave confirms with `REG,ACK,<node_id>,UID=<uid_hex>`.
+- Gateway only polls registered node addresses.
 
 ## Recommended ESP8266 Behavior
 
