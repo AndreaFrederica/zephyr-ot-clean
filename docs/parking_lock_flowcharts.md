@@ -292,6 +292,7 @@ flowchart TD
 ## 7. 设备注册与轮询时序图
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontSize': '32px' }}%%
 sequenceDiagram
     participant S as 从机<br/>node_id=0
     participant G as 网关主机
@@ -340,6 +341,7 @@ sequenceDiagram
 ## 8. 云到端控制命令完整时序图
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontSize': '32px' }}%%
 sequenceDiagram
     participant UI as 浏览器前端
     participant Cloud as FastAPI 云端
